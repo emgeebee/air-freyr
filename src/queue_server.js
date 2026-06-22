@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
-import { readFileSync } from 'fs';
-import { appendFile, mkdir, readFile } from 'fs/promises';
+import { readFileSync, constants as fsConstants } from 'fs';
+import { access, appendFile, mkdir, readFile } from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -13,6 +13,27 @@ const DEFAULT_CONF_PATH = path.join(PACKAGE_ROOT, 'conf.json');
 const VERSION = JSON.parse(
   readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf8'),
 ).version;
+
+function stripAnsi(text) {
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function tailLines(text, count = 4) {
+  return stripAnsi(text)
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(Boolean)
+    .slice(-count)
+    .join(' | ');
+}
+
+async function assertReadable(filePath, label) {
+  try {
+    await access(filePath, fsConstants.R_OK);
+  } catch {
+    throw new Error(`${label} not readable: ${filePath}`);
+  }
+}
 
 function apiJson(body) {
   return {version: VERSION, ...body};
@@ -166,24 +187,40 @@ export default class QueueServer {
       if (this.#opts.outputDir) dlArgs.push('-d', this.#opts.outputDir);
       if (this.#opts.config) dlArgs.push('-o', this.#opts.config);
 
-      const useNpx = process.env.AIRFREYR_SPAWN_NPX !== '0';
+      const useNpx = process.env.AIRFREYR_SPAWN_NPX === '1';
       const cmd = useNpx ? 'npx' : process.execPath;
       const args = useNpx
-        ? ['--yes', '@emgeebee/airfreyr', ...dlArgs]
+        ? ['--yes', `@emgeebee/airfreyr@${VERSION}`, ...dlArgs]
         : [CLI_PATH, ...dlArgs];
 
       console.log(`[airfreyr serve] download: ${cmd} ${args.join(' ')}`);
 
+      let stderr = '';
       const child = spawn(cmd, args, {
         cwd: useNpx ? this.#opts.queueDir : path.dirname(CLI_PATH),
-        stdio: 'inherit',
+        stdio: ['ignore', 'pipe', 'pipe'],
         env: process.env,
+      });
+      child.stdout?.on('data', chunk => process.stdout.write(chunk));
+      child.stderr?.on('data', chunk => {
+        process.stderr.write(chunk);
+        stderr += chunk.toString();
+        if (stderr.length > 16000) stderr = stderr.slice(-16000);
       });
       child.on('error', reject);
       child.on('close', code => {
         this.#scheduler.setExitCode(filePath, code);
         if (code === 0) resolve();
-        else reject(new Error(`airfreyr exited with code ${code}`));
+        else {
+          const detail = tailLines(stderr);
+          reject(
+            new Error(
+              detail
+                ? `airfreyr exited with code ${code}: ${detail}`
+                : `airfreyr exited with code ${code}`,
+            ),
+          );
+        }
       });
     });
   }
@@ -197,6 +234,15 @@ export default class QueueServer {
     const port = this.#opts.port;
     if (!Number.isFinite(port) || port < 1 || port > 65535)
       throw new Error('port must be a valid TCP port');
+
+    if (this.#opts.config) await assertReadable(this.#opts.config, 'config file');
+    if (this.#opts.outputDir) {
+      try {
+        await access(this.#opts.outputDir, fsConstants.R_OK | fsConstants.W_OK);
+      } catch {
+        throw new Error(`output directory not writable: ${this.#opts.outputDir}`);
+      }
+    }
 
     const app = express().use(cors()).use(express.json({limit: '64kb'}));
 

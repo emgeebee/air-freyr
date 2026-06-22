@@ -20,7 +20,6 @@ services:
       - "3797:3797"
     environment:
       AIRFREYR_REFRESH_HOURS: "3"
-      AIRFREYR_SPAWN_NPX: "1"
     volumes:
       - /volume1/docker/airfreyr/queues:/data/queues
       - /volume1/docker/airfreyr/music:/data/music
