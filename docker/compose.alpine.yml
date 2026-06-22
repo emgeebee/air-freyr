@@ -1,0 +1,26 @@
+# Compose-only option: no build, just node:alpine + mounted entrypoint.
+# First start runs `apk add python3 bash` once inside the container layer.
+#
+#   docker compose -f docker/compose.alpine.yml up -d
+
+services:
+  airfreyr:
+    image: node:20-alpine
+    container_name: airfreyr
+    restart: unless-stopped
+    working_dir: /data
+    ports:
+      - "3797:3797"
+    environment:
+      AIRFREYR_HOSTNAME: "0.0.0.0"
+      AIRFREYR_PORT: "3797"
+      AIRFREYR_QUEUE_DIR: /data/queues
+      AIRFREYR_OUTPUT_DIR: /data/music
+      AIRFREYR_CONFIG: /data/config/conf.json
+      AIRFREYR_REFRESH_HOURS: "3"
+    volumes:
+      - ./queues:/data/queues
+      - ./music:/data/music
+      - ./config:/data/config
+      - ./serve-entrypoint.sh:/entrypoint.sh:ro
+    entrypoint: ["/bin/sh", "-c", "apk add --no-cache python3 bash && exec /entrypoint.sh"]

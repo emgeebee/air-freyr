@@ -83,7 +83,14 @@ class FileDownloadScheduler {
   #state = new Map();
 
   schedule(filePath, runner) {
-    const state = this.#state.get(filePath) || {running: false, pending: false};
+    const state = this.#state.get(filePath) || {
+      running: false,
+      pending: false,
+      lastError: null,
+      lastStartedAt: null,
+      lastFinishedAt: null,
+      lastExitCode: null,
+    };
     this.#state.set(filePath, state);
     if (state.running) {
       state.pending = true;
@@ -93,17 +100,36 @@ class FileDownloadScheduler {
   }
 
   getStatus(filePath) {
-    return this.#state.get(filePath) || {running: false, pending: false};
+    return (
+      this.#state.get(filePath) || {
+        running: false,
+        pending: false,
+        lastError: null,
+        lastStartedAt: null,
+        lastFinishedAt: null,
+        lastExitCode: null,
+      }
+    );
+  }
+
+  setExitCode(filePath, code) {
+    const state = this.#state.get(filePath);
+    if (state) state.lastExitCode = code;
   }
 
   #run(filePath, runner, state) {
     state.running = true;
+    state.lastStartedAt = new Date().toISOString();
+    state.lastError = null;
+    state.lastExitCode = null;
     runner(filePath)
       .catch(err => {
+        state.lastError = err.message;
         console.error(`[airfreyr serve] download failed for ${filePath}: ${err.message}`);
       })
       .finally(() => {
         state.running = false;
+        state.lastFinishedAt = new Date().toISOString();
         if (state.pending) {
           state.pending = false;
           this.#run(filePath, runner, state);
@@ -127,15 +153,26 @@ export default class QueueServer {
 
   #spawnDownload(filePath) {
     return new Promise((resolve, reject) => {
-      const args = [CLI_PATH, '-i', filePath, '--no-logo', '--no-header', ...this.#opts.extraCliArgs];
-      if (this.#opts.outputDir) args.push('-d', this.#opts.outputDir);
-      if (this.#opts.config) args.push('-o', this.#opts.config);
-      const child = spawn(process.execPath, args, {
-        cwd: this.#opts.queueDir,
+      const dlArgs = ['-i', filePath, '--no-logo', '--no-header', ...this.#opts.extraCliArgs];
+      if (this.#opts.outputDir) dlArgs.push('-d', this.#opts.outputDir);
+      if (this.#opts.config) dlArgs.push('-o', this.#opts.config);
+
+      const useNpx = process.env.AIRFREYR_SPAWN_NPX !== '0';
+      const cmd = useNpx ? 'npx' : process.execPath;
+      const args = useNpx
+        ? ['--yes', '@emgeebee/airfreyr', ...dlArgs]
+        : [CLI_PATH, ...dlArgs];
+
+      console.log(`[airfreyr serve] download: ${cmd} ${args.join(' ')}`);
+
+      const child = spawn(cmd, args, {
+        cwd: useNpx ? this.#opts.queueDir : path.dirname(CLI_PATH),
         stdio: 'inherit',
+        env: process.env,
       });
       child.on('error', reject);
       child.on('close', code => {
+        this.#scheduler.setExitCode(filePath, code);
         if (code === 0) resolve();
         else reject(new Error(`airfreyr exited with code ${code}`));
       });

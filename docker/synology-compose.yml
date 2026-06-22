@@ -1,0 +1,45 @@
+# Synology Container Manager → Project → Create
+#
+# Edit BASE if your shared folder is not on volume1:
+#   /volume1/docker/airfreyr
+#
+# Required before starting (folders + conf.json must exist):
+#   /volume1/docker/airfreyr/queues/
+#   /volume1/docker/airfreyr/music/
+#   /volume1/docker/airfreyr/config/conf.json
+#
+# No image build. No extra scripts to copy. Uses node:20-alpine only.
+
+version: "3.8"
+
+services:
+  airfreyr:
+    image: node:20-alpine
+    restart: unless-stopped
+    ports:
+      - "3797:3797"
+    environment:
+      AIRFREYR_REFRESH_HOURS: "3"
+      AIRFREYR_SPAWN_NPX: "1"
+    volumes:
+      - /volume1/docker/airfreyr/queues:/data/queues
+      - /volume1/docker/airfreyr/music:/data/music
+      - /volume1/docker/airfreyr/config:/data/config
+    command:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache python3 bash
+        REFRESH=$(($${AIRFREYR_REFRESH_HOURS:-3} * 3600))
+        while true; do
+          echo "[airfreyr] starting $$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          rm -rf /root/.npm/_npx 2>/dev/null || true
+          npx --yes @emgeebee/airfreyr@latest serve --no-logo --no-header \
+            -H 0.0.0.0 -p 3797 \
+            -q /data/queues -D /data/music \
+            -o /data/config/conf.json &
+          PID=$$!
+          ( sleep $$REFRESH; kill $$PID 2>/dev/null || true ) &
+          wait $$PID 2>/dev/null || true
+          sleep 2
+        done

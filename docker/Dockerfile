@@ -1,11 +1,10 @@
-FROM node:20-bookworm-slim
+FROM node:20-alpine
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends python3 atomicparsley ca-certificates bash \
-  && rm -rf /var/lib/apt/lists/*
+# python3: yt-dlp (via youtube-dl-exec) · bash: entrypoint
+RUN apk add --no-cache python3 bash
 
-COPY docker/serve-entrypoint.sh /usr/local/bin/serve-entrypoint.sh
-RUN chmod +x /usr/local/bin/serve-entrypoint.sh
+COPY docker/serve-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 ENV AIRFREYR_HOSTNAME=0.0.0.0 \
     AIRFREYR_PORT=3797 \
@@ -22,4 +21,4 @@ VOLUME ["/data/queues", "/data/music", "/data/config"]
 
 EXPOSE 3797
 
-ENTRYPOINT ["/usr/local/bin/serve-entrypoint.sh"]
+ENTRYPOINT ["/entrypoint.sh"]

@@ -1,0 +1,27 @@
+{
+  "serve": {
+    "hostname": "0.0.0.0",
+    "port": 3797,
+    "queueDir": "/data/queues"
+  },
+  "dirs": {
+    "output": "/data/music",
+    "check": [],
+    "cache": {
+      "path": "<cache>",
+      "keep": true
+    }
+  },
+  "downloader": {
+    "sources": ["yt_music", "youtube"]
+  },
+  "services": {
+    "spotify": {},
+    "apple_music": {
+      "storefront": "us"
+    },
+    "deezer": {
+      "retries": 2
+    }
+  }
+}

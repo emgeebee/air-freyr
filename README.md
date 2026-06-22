@@ -78,7 +78,30 @@ AIRFREYR_QUEUE_DIR=./queues AIRFREYR_OUTPUT_DIR=./music airfreyr serve
 - Existing tracks in the file are skipped; only new lines are downloaded
 - If a download is already running for that file, another run is queued when it finishes
 
-**GET `/status?file=arlo.txt`** — check whether a download is in progress
+**GET `/status?file=arlo.txt`** — check whether a download is in progress (includes `lastError` if the last run failed)
+
+```bash
+curl 'http://<nas-ip>:3797/status?file=arlo.txt'
+```
+
+Example when a download failed:
+
+```json
+{
+  "ok": true,
+  "file": "arlo.txt",
+  "download": {
+    "running": false,
+    "pending": false,
+    "lastError": "airfreyr exited with code 2",
+    "lastExitCode": 2,
+    "lastStartedAt": "2026-06-22T20:15:00.000Z",
+    "lastFinishedAt": "2026-06-22T20:15:42.000Z"
+  }
+}
+```
+
+If `lastError` is set, check container logs for detail: `sudo docker logs --tail 100 airfreyr`
 
 **GET `/health`** — server status and configured directories
 
@@ -142,17 +165,28 @@ Project defaults live in [`conf.json`](conf.json). Use `-o, --config <FILE>` to 
 
 ## Docker (queue server)
 
-A lightweight image runs `npx @emgeebee/airfreyr@latest serve` and **restarts every 3 hours** so npm fetches the newest publish.
+A minimal `node:20-alpine` image runs `npx @emgeebee/airfreyr@latest serve` and **restarts every 3 hours** to pull the latest npm publish.
 
-### Quick start
+### Quick start (build once)
 
 ```bash
 mkdir -p docker/queues docker/music docker/config
-cp conf.json docker/config/conf.json   # edit paths/services as needed
+cp docker/conf.json.example docker/config/conf.json
 
 cd docker
 docker compose up --build
 ```
+
+### No build — plain `node:alpine`
+
+If you only want the stock Node image plus a mounted entrypoint script:
+
+```bash
+cd docker
+docker compose -f compose.alpine.yml up -d
+```
+
+This uses `node:20-alpine` directly. Python is installed on first start (`apk add python3 bash`), then the entrypoint runs `npx`.
 
 Queue files go in `docker/queues/` (e.g. `arlo.txt`). Downloads land in `docker/music/`.
 
@@ -173,6 +207,117 @@ docker run -d --name airfreyr \
 ```
 
 Put `conf.json` at `config/conf.json` inside the mounted config volume.
+
+### Synology Container Manager
+
+Use [`docker/synology-compose.yml`](docker/synology-compose.yml) and [`docker/conf.json.example`](docker/conf.json.example).
+
+#### 1. Create folders on the NAS
+
+In **File Station**, create:
+
+```text
+/volume1/docker/airfreyr/queues    ← queue .txt files (arlo.txt, pop.txt, …)
+/volume1/docker/airfreyr/music     ← downloaded tracks
+/volume1/docker/airfreyr/config    ← conf.json
+```
+
+Change `volume1` if your shared folder lives on a different volume.
+
+#### 2. Copy config and compose onto the NAS
+
+| NAS path | Source in repo |
+| --- | --- |
+| `/volume1/docker/airfreyr/config/conf.json` | `docker/conf.json.example` |
+| `/volume1/docker/airfreyr/docker-compose.yml` | `docker/synology-compose.yml` |
+
+Edit paths in `docker-compose.yml` if not using `volume1`. Put queue files in `queues/`.
+
+#### 3. Create the container project
+
+**Container Manager → Project → Create**
+
+- **Project name:** `airfreyr`
+- **Path:** `/volume1/docker/airfreyr/docker-compose.yml`
+- Start the project (pulls `node:20-alpine`, no build step)
+
+#### Directory mappings
+
+| NAS folder | Container path | Purpose |
+| --- | --- | --- |
+| `/volume1/docker/airfreyr/queues` | `/data/queues` | Queue `.txt` files |
+| `/volume1/docker/airfreyr/music` | `/data/music` | Downloaded music |
+| `/volume1/docker/airfreyr/config` | `/data/config` | `conf.json` (+ saved auth after first run) |
+
+#### Port
+
+Map host port **3797** → container **3797**. Then from your LAN:
+
+```bash
+curl http://<nas-ip>:3797/health
+```
+
+#### Manual container (UI fields)
+
+If you prefer **Container → Create** instead of a Project:
+
+| Setting | Value |
+| --- | --- |
+| Image | `node:20-alpine` |
+| Command | `apk add --no-cache python3 bash && exec /entrypoint.sh` |
+| Entrypoint | mount `serve-entrypoint.sh` → `/entrypoint.sh` |
+| Port | `3797:3797` |
+| `AIRFREYR_HOSTNAME` | `0.0.0.0` |
+| `AIRFREYR_QUEUE_DIR` | `/data/queues` |
+| `AIRFREYR_OUTPUT_DIR` | `/data/music` |
+| `AIRFREYR_CONFIG` | `/data/config/conf.json` |
+| Volume | `/volume1/docker/airfreyr/queues` → `/data/queues` |
+| Volume | `/volume1/docker/airfreyr/music` → `/data/music` |
+| Volume | `/volume1/docker/airfreyr/config` → `/data/config` |
+| Restart policy | Unless stopped |
+
+The container runs `npx @emgeebee/airfreyr@latest serve` and refreshes every 3 hours.
+
+#### "Build project failed" (no useful logs)
+
+Synology often shows only `Build project '…' failed` with no detail. The real error is elsewhere.
+
+**1. Check the folders exist first** (most common cause):
+
+```bash
+ls -la /volume1/docker/airfreyr/queues
+ls -la /volume1/docker/airfreyr/music
+ls -la /volume1/docker/airfreyr/config/conf.json
+```
+
+Synology will fail if any mapped folder or `conf.json` is missing.
+
+**2. Get the real error via SSH** (Control Panel → Terminal & SNMP → Enable SSH):
+
+```bash
+cd /volume1/docker/airfreyr
+sudo docker compose config          # validate compose syntax
+sudo docker compose up              # run in foreground — errors print here
+# or after a failed project start:
+sudo docker compose logs --tail 50
+sudo docker logs airfreyr 2>&1
+```
+
+**3. In Container Manager UI**
+
+- **Container** → select `airfreyr` → **Details** → **Log** tab (runtime logs, after container starts)
+- **Project** → your project → **Action** → delete and recreate after fixing paths
+- **Log Center** → search for `docker` / `container` around the failure time
+
+**4. Common fixes**
+
+| Problem | Fix |
+| --- | --- |
+| Volume path wrong | Use absolute paths; edit `volume1` in `docker-compose.yml` |
+| `conf.json` missing | Copy `docker/conf.json.example` to `config/conf.json` |
+| Old project stuck | Delete project + container, recreate |
+| Still using `build:` | Use `docker/synology-compose.yml` — it has no build step |
+| Port in use | Change `3797:3797` to e.g. `3798:3797` |
 
 ### Environment
 
