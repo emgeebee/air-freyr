@@ -12,6 +12,11 @@
       "keep": true
     }
   },
+  "opts": {
+    "netCheck": true,
+    "attemptAuth": false,
+    "autoOpenBrowser": false
+  },
   "downloader": {
     "sources": ["yt_music", "youtube"]
   },

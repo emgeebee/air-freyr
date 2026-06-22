@@ -39,11 +39,10 @@ export default class Spotify {
   };
 
   constructor(config, authServer, serverOpts) {
-    if (!config) throw new Error(`[Spotify] Please define a configuration object`);
+    config = config || {};
     if (typeof config !== 'object') throw new Error(`[Spotify] Please define a configuration as an object`);
-    if (!config.clientId) throw new Error(`[Spotify] Please define [clientId] as a property within the configuration`);
-    if (!config.clientSecret) throw new Error(`[Spotify] Please define [clientSecret] as a property within the configuration`);
     [this.#store.AuthServer, this.#store.serverOpts] = [authServer, serverOpts];
+    if (!config.clientId || !config.clientSecret) return;
     this.#store.core = new SpotifyWebApi({
       clientId: config.clientId,
       clientSecret: config.clientSecret,
@@ -51,7 +50,13 @@ export default class Spotify {
     });
   }
 
+  #requireCore() {
+    if (!this.#store.core)
+      throw new Error(`[Spotify] Please define [clientId] and [clientSecret] within the configuration`);
+  }
+
   loadConfig(config) {
+    if (!this.#store.core) return;
     if (config.expiry) this.#store.expiry = config.expiry;
     if (config.accessToken) this.#store.core.setAccessToken(config.accessToken);
     if (config.refreshToken) this.#store.core.setRefreshToken(config.refreshToken);
@@ -62,14 +67,17 @@ export default class Spotify {
   }
 
   accessTokenIsValid() {
+    if (!this.#store.core) return false;
     return Date.now() < this.#store.expiry;
   }
 
   async isAuthed() {
+    if (!this.#store.core) return false;
     return this.accessTokenIsValid();
   }
 
   newAuth() {
+    this.#requireCore();
     const server = new this.#store.AuthServer({...this.#store.serverOpts, serviceName: 'Spotify'});
     this.#store.core.setRedirectURI(server.getRedirectURL());
     const scope = ['user-read-private', 'user-read-email'];
@@ -93,7 +101,7 @@ export default class Spotify {
   }
 
   canTryLogin() {
-    return !!this.#store.core.getRefreshToken();
+    return !!this.#store.core?.getRefreshToken();
   }
 
   hasProps() {
@@ -101,6 +109,7 @@ export default class Spotify {
   }
 
   getProps() {
+    this.#requireCore();
     return {
       expiry: this.#store.expiry,
       accessToken: this.#store.core.getAccessToken(),
@@ -109,6 +118,7 @@ export default class Spotify {
   }
 
   async login(config) {
+    this.#requireCore();
     if (config) this.loadConfig(config);
     if (!this.accessTokenIsValid()) {
       const data = await this.#store.core.refreshAccessToken();
@@ -222,6 +232,7 @@ export default class Spotify {
   }
 
   async processData(uris, max, coreFn) {
+    this.#requireCore();
     const wasArr = Array.isArray(uris);
     uris = (wasArr ? uris : [uris]).map(uri => {
       const parsedURI = this.parseURI(uri);
@@ -329,10 +340,12 @@ export default class Spotify {
   }
 
   async checkIsActivelyListening() {
+    this.#requireCore();
     return (await this.#store.core.getMyCurrentPlaybackState()).statusCode !== '204';
   }
 
   async getActiveTrack() {
+    this.#requireCore();
     return this.#store.core.getMyCurrentPlayingTrack();
   }
 
