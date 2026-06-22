@@ -1,0 +1,13 @@
+# ignore local package files
+node_modules/
+
+# ignore binaries
+bins/
+
+# ignore stage for testing
+stage/
+
+.DS_Store
+
+# local credentials (use conf.json template + first-run auth instead)
+conf

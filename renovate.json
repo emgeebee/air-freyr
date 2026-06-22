@@ -1,0 +1,50 @@
+{
+  "labels": [
+    "dependencies"
+  ],
+  "extends": [
+    "config:base"
+  ],
+  "schedule": "every weekend",
+  "packageRules": [
+    {
+      "enabled": false,
+      "matchFiles": [
+        ".github/workflows/tests.yml",
+        ".github/workflows/publish.yml"
+      ],
+      "matchPackageNames": [
+        "docker/login-action",
+        "docker/metadata-action",
+        "docker/build-push-action",
+        "docker/setup-qemu-action",
+        "docker/setup-buildx-action",
+        "ffurrer2/extract-release-notes",
+        "marocchino/sticky-pull-request-comment"
+      ]
+    },
+    {
+      "groupName": "ffmpeg-wasm",
+      "matchPackagePrefixes": [
+        "@ffmpeg/"
+      ]
+    },
+    {
+      "groupName": "eslint-plugin-prettier",
+      "matchPackageNames": [
+        "prettier",
+        "eslint-plugin-prettier"
+      ]
+    },
+    {
+      "groupName": "actions/upload-download-artifact",
+      "matchFiles": [
+        ".github/workflows/tests.yml"
+      ],
+      "matchPackageNames": [
+        "actions/upload-artifact",
+        "actions/download-artifact"
+      ]
+    }
+  ]
+}

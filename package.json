@@ -1,0 +1,128 @@
+{
+  "name": "@emgeebee/airfreyr",
+  "version": "0.10.3",
+  "description": "Music downloader with an HTTP queue server for remote track requests",
+  "exports": "./src/freyr.js",
+  "type": "module",
+  "bin": {
+    "airfreyr": "./cli.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "dev": "node ./cli.js",
+    "serve": "node ./cli.js serve",
+    "arlo": "node ./cli.js -i arlo.txt",
+    "pop": "node ./cli.js -i pop.txt",
+    "test": "$NODE test/index.js"
+  },
+  "files": [
+    "src",
+    "conf.json",
+    "banner.js"
+  ],
+  "directories": {
+    "lib": "src"
+  },
+  "keywords": [
+    "spotify",
+    "music-streaming",
+    "music",
+    "manager",
+    "download",
+    "track",
+    "album",
+    "artist",
+    "playlist",
+    "iTunes",
+    "mpeg-4",
+    "m4a",
+    "audio",
+    "320kbps"
+  ],
+  "author": "emgeebee",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/emgeebee/air-freyr.git"
+  },
+  "bugs": {
+    "url": "https://github.com/emgeebee/air-freyr/issues"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@ffmpeg/core": "^0.11.0",
+    "@ffmpeg/ffmpeg": "^0.11.0",
+    "@miraclx/spotify-web-api-node": "^5.1.0",
+    "@yujinakayama/apple-music": "^0.4.1",
+    "async": "^3.2.4",
+    "bluebird": "^3.7.2",
+    "cachedir": "^2.3.0",
+    "commander": "^11.0.0",
+    "conf": "^12.0.0",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "country-data": "0.0.31",
+    "es-main": "^1.0.2",
+    "express": "^4.18.1",
+    "file-type": "^19.0.0",
+    "filenamify": "^6.0.0",
+    "got": "^13.0.0",
+    "hh-mm-ss": "^1.2.0",
+    "html-entities": "^2.3.3",
+    "isbinaryfile": "^5.0.0",
+    "libxget": "^0.11.0",
+    "lodash.merge": "^4.6.2",
+    "lodash.mergewith": "^4.6.2",
+    "lodash.sortby": "^4.7.0",
+    "merge2": "^1.4.1",
+    "minimatch": "^9.0.0",
+    "mkdirp": "^3.0.0",
+    "node-cache": "^5.1.2",
+    "node-id3": "^0.2.9",
+    "open": "^10.0.0",
+    "pretty-ms": "^9.0.0",
+    "public-ip": "^6.0.1",
+    "spotify-uri": "^4.0.0",
+    "stringd": "^2.2.0",
+    "stringd-colors": "^1.10.0",
+    "xbytes": "^1.8.0",
+    "xprogress": "^0.20.0",
+    "youtube-dl-exec": "^3.0.7",
+    "yt-search": "^2.10.3"
+  },
+  "devDependencies": {
+    "eslint": "8.57.0",
+    "eslint-plugin-prettier": "5.2.1",
+    "prettier": "3.3.3"
+  },
+  "overrides": {
+    "public-ip": {
+      "got": "13.0.0"
+    },
+    "yt-search": {
+      "node-fzf": {
+        ".": "0.11.0",
+        "cli-color": "2.0.4",
+        "string-width": "7.2.0"
+      }
+    },
+    "@yujinakayama/apple-music": {
+      "axios": "1.7.2"
+    },
+    "@ffmpeg/ffmpeg": {
+      "node-fetch": "2.7.0"
+    }
+  },
+  "resolutions": {
+    "@yujinakayama/apple-music/axios": "1.7.2",
+    "@ffmpeg/ffmpeg/node-fetch": "2.7.0",
+    "public-ip/got": "13.0.0",
+    "yt-search/node-fzf": "0.11.0",
+    "yt-search/node-fzf/cli-color": "2.0.4",
+    "yt-search/node-fzf/string-width": "7.2.0"
+  }
+}
