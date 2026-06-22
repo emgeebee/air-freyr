@@ -61,6 +61,8 @@ AIRFREYR_QUEUE_DIR=./queues AIRFREYR_OUTPUT_DIR=./music airfreyr serve
 
 ### API
 
+All responses include `"version"` (the running `@emgeebee/airfreyr` package version).
+
 **POST `/add`** — append a track and start downloading the queue file.
 
 ```json
@@ -88,6 +90,7 @@ Example when a download failed:
 
 ```json
 {
+  "version": "1.0.1",
   "ok": true,
   "file": "arlo.txt",
   "download": {

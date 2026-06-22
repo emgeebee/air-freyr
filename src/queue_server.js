@@ -1,4 +1,5 @@
 import { spawn } from 'child_process';
+import { readFileSync } from 'fs';
 import { appendFile, mkdir, readFile } from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -6,8 +7,16 @@ import { fileURLToPath } from 'url';
 import cors from 'cors';
 import express from 'express';
 
-const CLI_PATH = path.join(fileURLToPath(new URL('.', import.meta.url)), '..', 'cli.js');
-const DEFAULT_CONF_PATH = path.join(fileURLToPath(new URL('.', import.meta.url)), '..', 'conf.json');
+const PACKAGE_ROOT = path.join(fileURLToPath(new URL('.', import.meta.url)), '..');
+const CLI_PATH = path.join(PACKAGE_ROOT, 'cli.js');
+const DEFAULT_CONF_PATH = path.join(PACKAGE_ROOT, 'conf.json');
+const VERSION = JSON.parse(
+  readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf8'),
+).version;
+
+function apiJson(body) {
+  return {version: VERSION, ...body};
+}
 
 export async function loadProjectConfig(configPath = DEFAULT_CONF_PATH) {
   return JSON.parse(await readFile(configPath, 'utf8'));
@@ -192,11 +201,13 @@ export default class QueueServer {
     const app = express().use(cors()).use(express.json({limit: '64kb'}));
 
     app.get('/health', (_req, res) => {
-      res.json({
-        ok: true,
-        queueDir: path.resolve(this.#opts.queueDir),
-        outputDir: this.#opts.outputDir ? path.resolve(this.#opts.outputDir) : null,
-      });
+      res.json(
+        apiJson({
+          ok: true,
+          queueDir: path.resolve(this.#opts.queueDir),
+          outputDir: this.#opts.outputDir ? path.resolve(this.#opts.outputDir) : null,
+        }),
+      );
     });
 
     app.post('/add', async (req, res) => {
@@ -206,24 +217,32 @@ export default class QueueServer {
         const line = formatBatchCsvLine(item).trimEnd();
         await this.#appendLine(filePath, item);
         this.#scheduler.schedule(filePath, fp => this.#spawnDownload(fp));
-        res.status(201).json({
-          ok: true,
-          file: item.file,
-          filePath,
-          line,
-          download: this.#scheduler.getStatus(filePath),
-        });
+        res.status(201).json(
+          apiJson({
+            ok: true,
+            file: item.file,
+            filePath,
+            line,
+            download: this.#scheduler.getStatus(filePath),
+          }),
+        );
       } catch (err) {
-        res.status(400).json({ok: false, error: err.message});
+        res.status(400).json(apiJson({ok: false, error: err.message}));
       }
     });
 
     app.get('/status', (req, res) => {
       try {
         const filePath = resolveQueueFile(this.#opts.queueDir, req.query.file);
-        res.json({ok: true, file: req.query.file, download: this.#scheduler.getStatus(filePath)});
+        res.json(
+          apiJson({
+            ok: true,
+            file: req.query.file,
+            download: this.#scheduler.getStatus(filePath),
+          }),
+        );
       } catch (err) {
-        res.status(400).json({ok: false, error: err.message});
+        res.status(400).json(apiJson({ok: false, error: err.message}));
       }
     });
 
@@ -232,7 +251,7 @@ export default class QueueServer {
       this.#server.on('error', reject);
     });
 
-    console.log(`[airfreyr serve] listening on ${this.baseUrl}`);
+    console.log(`[airfreyr serve] v${VERSION} listening on ${this.baseUrl}`);
     console.log(`[airfreyr serve] queue directory: ${path.resolve(this.#opts.queueDir)}`);
     if (this.#opts.outputDir)
       console.log(`[airfreyr serve] output directory: ${path.resolve(this.#opts.outputDir)}`);
