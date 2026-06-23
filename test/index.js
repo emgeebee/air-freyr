@@ -281,7 +281,7 @@ async function main(args) {
 
   suite = JSON.parse(await fs.readFile(test_suite || join(__dirname, 'default.json')));
 
-  if (!['-h', '--help'].some(args.includes.bind(args))) {
+  if (!['-h', '--help'].some(flag => args.includes(flag))) {
     let exitCode;
     try {
       if (noService !== (await run_tests(suite, args))) return;
