@@ -49,7 +49,6 @@
     "sources": ["yt_music", "youtube"]
   },
   "services": {
-    "spotify": {},
     "apple_music": {
       "storefront": "us"
     },

@@ -3,43 +3,49 @@
 
 freyr is bundled with its own flexibly customizable test runner.
 
-- To run all tests
+- To run the default local queue-server tests
 
   ```console
-  npm test -- --all
+  npm test
   ```
 
-- To run just Spotify tests
+- To run all provider download tests
 
   ```console
-  npm test -- spotify
+  npm run test:providers -- --all
+  ```
+
+- To run just Deezer tests
+
+  ```console
+  npm run test:providers -- deezer
   ```
 
 - To run just Apple Music artist tests
 
   ```console
-  npm test -- apple_music.artist
+  npm run test:providers -- apple_music.artist
   ```
 
 - You can use a custom test suite (see the [default suite](https://github.com/miraclx/freyr-js/blob/master/test/default.json) for an example)
 
   ```console
-  npm test -- --all --suite ./special_cases.json
+  npm run test:providers -- --all --suite ./special_cases.json
   ```
 
 - And optionally, you can run the tests inside a freyr docker container
 
   ```console
-  npm test -- deezer --docker freyr-dev:latest
+  npm run test:providers -- deezer --docker freyr-dev:latest
   ```
 
 - You can customize the working directory for storing the tracks and logs
 
   ```console
-  npm test -- spotify.track --name run-1 --stage ./test-runs
+  npm run test:providers -- deezer.track --name run-1 --stage ./test-runs
   ```
 
-## `npm test -- --help`
+## `npm run test:providers -- --help`
 
 ```console
 freyr-test
@@ -50,7 +56,7 @@ Utility for testing the Freyr CLI
 
 Options:
 
-  SERVICE                 spotify / apple_music / deezer
+  SERVICE                 apple_music / deezer
   TYPE                    track / album / artist / playlist
 
   --all                   run all tests
@@ -67,12 +73,12 @@ Example:
   $ freyr-test --all
       runs all tests
 
-  $ freyr-test spotify
-      runs all Spotify tests
+  $ freyr-test deezer
+      runs all Deezer tests
 
   $ freyr-test apple_music.album
       tests downloading an Apple Music album
 
-  $ freyr-test spotify.track deezer.artist
-      tests downloading a Spotify track and Deezer artist
+  $ freyr-test apple_music.track deezer.artist
+      tests downloading an Apple Music track and Deezer artist
 ```

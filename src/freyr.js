@@ -4,11 +4,10 @@ import _sortBy from 'lodash.sortby';
 import symbols from './symbols.js';
 import {YouTube, YouTubeMusic} from './services/youtube.js';
 import Deezer from './services/deezer.js';
-import Spotify from './services/spotify.js';
 import AppleMusic from './services/apple_music.js';
 
 export default class FreyrCore {
-  static ENGINES = [Deezer, Spotify, AppleMusic, YouTube, YouTubeMusic];
+  static ENGINES = [Deezer, AppleMusic, YouTube, YouTubeMusic];
 
   static getBitrates() {
     return Array.from(

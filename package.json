@@ -30,7 +30,6 @@
     "lib": "src"
   },
   "keywords": [
-    "spotify",
     "music-streaming",
     "music",
     "manager",
@@ -57,7 +56,6 @@
   "dependencies": {
     "@ffmpeg/core": "^0.11.0",
     "@ffmpeg/ffmpeg": "^0.11.0",
-    "@miraclx/spotify-web-api-node": "^5.1.0",
     "@yujinakayama/apple-music": "^0.4.1",
     "async": "^3.2.4",
     "bluebird": "^3.7.2",
@@ -87,7 +85,6 @@
     "open": "^10.0.0",
     "pretty-ms": "^9.0.0",
     "public-ip": "^6.0.1",
-    "spotify-uri": "^4.0.0",
     "stringd": "^2.2.0",
     "stringd-colors": "^1.10.0",
     "xbytes": "^1.8.0",

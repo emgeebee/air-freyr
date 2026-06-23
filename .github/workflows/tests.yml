@@ -70,7 +70,6 @@ jobs:
       fail-fast: false
       matrix:
         service:
-          - { id: spotify, name: Spotify }
           - { id: apple-music, name: "Apple Music", slug: apple_music }
           - { id: deezer, name: Deezer }
         test:
@@ -105,7 +104,7 @@ jobs:
     - name: ${{ matrix.service.name }} - Download ${{ matrix.test.name }}
       env:
         DOCKER_ARGS: "--user root"
-      run: npm test -- --docker freyr-dev ${{ matrix.service.slug || matrix.service.id }}.${{ matrix.test.type }}
+      run: npm run test:providers -- --docker freyr-dev ${{ matrix.service.slug || matrix.service.id }}.${{ matrix.test.type }}
 
   docker-publish:
     runs-on: ubuntu-latest

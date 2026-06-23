@@ -1,44 +1,4 @@
 {
-  "spotify": {
-    "track": {
-      "uri": "https://open.spotify.com/track/5FNS5Vj69AhRGJWjhrAd01",
-      "expect": [
-        "[•] Collation Complete",
-        "[•] Total tracks: [01]",
-        "✓ Passed:  [01]",
-        "✕ Failed:  [00]"
-      ]
-    },
-    "album": {
-      "uri": "https://open.spotify.com/album/2D23kwwoy2JpZVuJwzE42B",
-      "expect": [
-        "[•] Collation Complete",
-        "[•] Total tracks: [04]",
-        "✓ Passed:  [04]",
-        "✕ Failed:  [00]"
-      ]
-    },
-    "artist": {
-      "uri": "https://open.spotify.com/artist/4adSXA1GDOxNG7Zw89YHyz",
-      "filter": [
-        "album=\"the rainbow cassette\"",
-        "album=\"make believe\""
-      ],
-      "expect": [
-        "[•] Collation Complete",
-        "✓ Passed:  [10]",
-        "✕ Failed:  [00]"
-      ]
-    },
-    "playlist": {
-      "uri": "https://open.spotify.com/playlist/5KcCGEx7fFqXYNiJkSQ5KT",
-      "expect": [
-        "[•] Collation Complete",
-        "✓ Passed:  [05]",
-        "✕ Failed:  [00]"
-      ]
-    }
-  },
   "apple_music": {
     "track": {
       "uri": "https://music.apple.com/us/album/elio-irl/1547735824?i=1547736100",

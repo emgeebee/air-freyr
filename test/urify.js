@@ -2,22 +2,6 @@ import FreyrCore from '../src/freyr.js';
 
 let corpus = [
   {
-    url: 'https://open.spotify.com/track/127QTOFJsJQp5LbJbu3A1y',
-    uri: 'spotify:track:127QTOFJsJQp5LbJbu3A1y',
-  },
-  {
-    url: 'https://open.spotify.com/album/623PL2MBg50Br5dLXC9E9e',
-    uri: 'spotify:album:623PL2MBg50Br5dLXC9E9e',
-  },
-  {
-    url: 'https://open.spotify.com/artist/6M2wZ9GZgrQXHCFfjv46we',
-    uri: 'spotify:artist:6M2wZ9GZgrQXHCFfjv46we',
-  },
-  {
-    url: 'https://open.spotify.com/playlist/37i9dQZF1DXcBWIGoYBM5M',
-    uri: 'spotify:playlist:37i9dQZF1DXcBWIGoYBM5M',
-  },
-  {
     url: 'https://music.apple.com/us/album/say-so-feat-nicki-minaj/1510821672?i=1510821685',
     uri: 'apple_music:track:1510821685',
   },

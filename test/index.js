@@ -333,17 +333,17 @@ async function main(args) {
   console.log('  $ freyr-test --all');
   console.log('      runs all tests');
   console.log();
-  console.log('  $ freyr-test spotify');
-  console.log('      runs all Spotify tests');
+  console.log('  $ freyr-test deezer');
+  console.log('      runs all Deezer tests');
   console.log();
   console.log('  $ freyr-test apple_music.album');
   console.log('      tests downloading an Apple Music album');
   console.log();
-  console.log('  $ freyr-test spotify.track deezer.artist');
-  console.log('      tests downloading a Spotify track and Deezer artist');
+  console.log('  $ freyr-test apple_music.track deezer.artist');
+  console.log('      tests downloading an Apple Music track and Deezer artist');
   console.log();
-  console.log('  $ freyr-test spotify.track --stage ./stage --name test-run');
-  console.log('      downloads the Spotify test track in ./stage/test-run/spotify.track with logs');
+  console.log('  $ freyr-test deezer.track --stage ./stage --name test-run');
+  console.log('      downloads the Deezer test track in ./stage/test-run/deezer.track with logs');
 }
 
 function _start() {
