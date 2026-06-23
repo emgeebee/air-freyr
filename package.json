@@ -1,6 +1,6 @@
 {
   "name": "@emgeebee/airfreyr",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Music downloader with an HTTP queue server for remote track requests",
   "exports": "./src/freyr.js",
   "type": "module",
@@ -18,7 +18,7 @@
     "serve": "node ./cli.js serve",
     "arlo": "node ./cli.js -i arlo.txt",
     "pop": "node ./cli.js -i pop.txt",
-    "test": "$NODE test/index.js"
+    "test": "node test/queue_server.js"
   },
   "files": [
     "src",
@@ -29,7 +29,6 @@
     "lib": "src"
   },
   "keywords": [
-    "spotify",
     "music-streaming",
     "music",
     "manager",
@@ -38,7 +37,6 @@
     "album",
     "artist",
     "playlist",
-    "iTunes",
     "mpeg-4",
     "m4a",
     "audio",
@@ -56,8 +54,6 @@
   "dependencies": {
     "@ffmpeg/core": "^0.11.0",
     "@ffmpeg/ffmpeg": "^0.11.0",
-    "@miraclx/spotify-web-api-node": "^5.1.0",
-    "@yujinakayama/apple-music": "^0.4.1",
     "async": "^3.2.4",
     "bluebird": "^3.7.2",
     "cachedir": "^2.3.0",
@@ -86,7 +82,6 @@
     "open": "^10.0.0",
     "pretty-ms": "^9.0.0",
     "public-ip": "^6.0.1",
-    "spotify-uri": "^4.0.0",
     "stringd": "^2.2.0",
     "stringd-colors": "^1.10.0",
     "xbytes": "^1.8.0",
@@ -110,15 +105,11 @@
         "string-width": "7.2.0"
       }
     },
-    "@yujinakayama/apple-music": {
-      "axios": "1.7.2"
-    },
     "@ffmpeg/ffmpeg": {
       "node-fetch": "2.7.0"
     }
   },
   "resolutions": {
-    "@yujinakayama/apple-music/axios": "1.7.2",
     "@ffmpeg/ffmpeg/node-fetch": "2.7.0",
     "public-ip/got": "13.0.0",
     "yt-search/node-fzf": "0.11.0",

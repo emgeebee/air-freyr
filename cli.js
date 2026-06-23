@@ -542,7 +542,8 @@ function isPermanentFeedError(err) {
 
 function cleanTrackTitle(name, artist) {
   let cleaned = (name || "")
-    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F]/gu, "")
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
+    .replace(/\uFE0F/gu, "")
     .replace(/#\S*/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -1003,9 +1004,6 @@ async function init(packageJson, queries, options) {
     },
     migrations: {
       "0.10.0": (store) => {
-        // https://github.com/miraclx/freyr-js/pull/454
-        // Dump any old config for Spotify before this point
-        store.set("services.spotify", {});
         // https://github.com/miraclx/freyr-js/pull/527
         // Check dirs shouldn't default to current directory, but rather the output directory
         if (
@@ -2760,9 +2758,9 @@ function prepCli(packageJson) {
       console.log("");
       console.log("Info:");
       console.log("  The `get` subcommand is implicit and default");
-      console.log("   $ freyr spotify:artist:6M2wZ9GZgrQXHCFfjv46we");
+      console.log("   $ freyr https://music.youtube.com/watch?v=jBmhsV9NKPg");
       console.log("     # is equivalent to");
-      console.log("   $ freyr get spotify:artist:6M2wZ9GZgrQXHCFfjv46we");
+      console.log("   $ freyr get https://music.youtube.com/watch?v=jBmhsV9NKPg");
     });
 
   program
@@ -3197,7 +3195,7 @@ function prepCli(packageJson) {
       console.log('  /home/miraclx/.config/FreyrCLI/test.x4p');
       console.log('');
       console.log('  # unless unencrypted, will ask to decrypt profile');
-      console.log('  $ freyr --profile test deezer:playlist:1963962142');
+      console.log('  $ freyr --profile test https://www.youtube.com/watch?v=jBmhsV9NKPg');
       console.log('    ? Enter an encryption key: **********');
       console.log('  [...]');
     });
@@ -3345,24 +3343,24 @@ function prepCli(packageJson) {
       console.log("");
       console.log("Examples:");
       console.log(
-        "  $ freyr urify -t https://open.spotify.com/album/2D23kwwoy2JpZVuJwzE42B",
+        "  $ freyr urify -t https://www.youtube.com/watch?v=jBmhsV9NKPg",
       );
-      console.log("  spotify:album:2D23kwwoy2JpZVuJwzE42B");
+      console.log("  youtube:track:jBmhsV9NKPg");
       console.log("");
       console.log(
-        "  $ freyr urify -t https://music.apple.com/us/album/say-so-feat-nicki-minaj/1510821672?i=1510821685",
+        "  $ freyr urify -t https://youtu.be/jBmhsV9NKPg",
       );
-      console.log("  apple_music:track:1510821685");
+      console.log("  youtube:track:jBmhsV9NKPg");
       console.log("");
       console.log(
         [
-          "  $ echo https://www.deezer.com/en/artist/5340439 \\",
-          "         https://music.apple.com/us/playlist/todays-hits/pl.f4d106fed2bd41149aaacabb233eb5eb \\",
+          "  $ echo https://www.youtube.com/watch?v=jBmhsV9NKPg \\",
+          "         https://youtu.be/jBmhsV9NKPg \\",
           "      | freyr urify -t",
         ].join("\n"),
       );
-      console.log("  deezer:artist:5340439");
-      console.log("  apple_music:playlist:pl.f4d106fed2bd41149aaacabb233eb5eb");
+      console.log("  youtube:track:jBmhsV9NKPg");
+      console.log("  youtube:track:jBmhsV9NKPg");
     });
 
   return program;
