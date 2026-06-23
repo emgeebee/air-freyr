@@ -21,10 +21,10 @@ freyr is bundled with its own flexibly customizable test runner.
   npm run test:providers -- deezer
   ```
 
-- To run just Apple Music artist tests
+- To run just Deezer artist tests
 
   ```console
-  npm run test:providers -- apple_music.artist
+  npm run test:providers -- deezer.artist
   ```
 
 - You can use a custom test suite (see the [default suite](https://github.com/miraclx/freyr-js/blob/master/test/default.json) for an example)
@@ -56,7 +56,7 @@ Utility for testing the Freyr CLI
 
 Options:
 
-  SERVICE                 apple_music / deezer
+  SERVICE                 deezer
   TYPE                    track / album / artist / playlist
 
   --all                   run all tests
@@ -76,9 +76,9 @@ Example:
   $ freyr-test deezer
       runs all Deezer tests
 
-  $ freyr-test apple_music.album
-      tests downloading an Apple Music album
+  $ freyr-test deezer.album
+      tests downloading a Deezer album
 
-  $ freyr-test apple_music.track deezer.artist
-      tests downloading an Apple Music track and Deezer artist
+  $ freyr-test deezer.track deezer.artist
+      tests downloading a Deezer track and Deezer artist
 ```

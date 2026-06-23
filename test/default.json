@@ -1,44 +1,4 @@
 {
-  "apple_music": {
-    "track": {
-      "uri": "https://music.apple.com/us/album/elio-irl/1547735824?i=1547736100",
-      "expect": [
-        "[•] Collation Complete",
-        "[•] Total tracks: [01]",
-        "✓ Passed:  [01]",
-        "✕ Failed:  [00]"
-      ]
-    },
-    "album": {
-      "uri": "https://music.apple.com/us/album/im-sorry-im-not-sorry-ep/1491795443",
-      "expect": [
-        "[•] Collation Complete",
-        "[•] Total tracks: [04]",
-        "✓ Passed:  [04]",
-        "✕ Failed:  [00]"
-      ]
-    },
-    "artist": {
-      "uri": "https://music.apple.com/us/artist/mazie/1508029053",
-      "filter": [
-        "album=\"the rainbow cassette\"",
-        "album=\"make believe\""
-      ],
-      "expect": [
-        "[•] Collation Complete",
-        "✓ Passed:  [10]",
-        "✕ Failed:  [00]"
-      ]
-    },
-    "playlist": {
-      "uri": "https://music.apple.com/us/playlist/songs-from-up-next-bazzi/pl.56c4bdf909954beca0cf69379a48144f",
-      "expect": [
-        "[•] Collation Complete",
-        "✓ Passed:  [06]",
-        "✕ Failed:  [00]"
-      ]
-    }
-  },
   "deezer": {
     "track": {
       "uri": "https://www.deezer.com/en/track/1189202982",

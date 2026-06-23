@@ -3342,24 +3342,24 @@ function prepCli(packageJson) {
       console.log("");
       console.log("Examples:");
       console.log(
-        "  $ freyr urify -t https://music.apple.com/us/album/say-so-feat-nicki-minaj/1510821672?i=1510821685",
-      );
-      console.log("  apple_music:track:1510821685");
-      console.log("");
-      console.log(
         "  $ freyr urify -t https://www.deezer.com/en/playlist/1963962142",
       );
       console.log("  deezer:playlist:1963962142");
       console.log("");
       console.log(
+        "  $ freyr urify -t https://www.youtube.com/watch?v=jBmhsV9NKPg",
+      );
+      console.log("  youtube:track:jBmhsV9NKPg");
+      console.log("");
+      console.log(
         [
           "  $ echo https://www.deezer.com/en/artist/5340439 \\",
-          "         https://music.apple.com/us/playlist/todays-hits/pl.f4d106fed2bd41149aaacabb233eb5eb \\",
+          "         https://www.deezer.com/en/track/642674232 \\",
           "      | freyr urify -t",
         ].join("\n"),
       );
       console.log("  deezer:artist:5340439");
-      console.log("  apple_music:playlist:pl.f4d106fed2bd41149aaacabb233eb5eb");
+      console.log("  deezer:track:642674232");
     });
 
   return program;

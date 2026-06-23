@@ -2,26 +2,6 @@ import FreyrCore from '../src/freyr.js';
 
 let corpus = [
   {
-    url: 'https://music.apple.com/us/album/say-so-feat-nicki-minaj/1510821672?i=1510821685',
-    uri: 'apple_music:track:1510821685',
-  },
-  {
-    url: 'https://music.apple.com/us/song/1510821685',
-    uri: 'apple_music:track:1510821685',
-  },
-  {
-    url: 'https://music.apple.com/us/album/birds-of-prey-the-album/1493581254',
-    uri: 'apple_music:album:1493581254',
-  },
-  {
-    url: 'https://music.apple.com/us/artist/412778295',
-    uri: 'apple_music:artist:412778295',
-  },
-  {
-    url: 'https://music.apple.com/us/playlist/todays-hits/pl.f4d106fed2bd41149aaacabb233eb5eb',
-    uri: 'apple_music:playlist:pl.f4d106fed2bd41149aaacabb233eb5eb',
-  },
-  {
     url: 'https://www.deezer.com/en/track/642674232',
     uri: 'deezer:track:642674232',
   },

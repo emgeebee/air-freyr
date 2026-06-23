@@ -1,6 +1,6 @@
 # @emgeebee/airfreyr
 
-Download music from Apple Music, Deezer, and YouTube. Fork of [freyr-js](https://github.com/miraclx/freyr-js) with an HTTP queue server for remote track requests.
+Download music from Deezer and YouTube. Fork of [freyr-js](https://github.com/miraclx/freyr-js) with an HTTP queue server for remote track requests.
 
 ## Requirements
 

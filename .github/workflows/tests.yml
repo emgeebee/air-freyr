@@ -70,7 +70,6 @@ jobs:
       fail-fast: false
       matrix:
         service:
-          - { id: apple-music, name: "Apple Music", slug: apple_music }
           - { id: deezer, name: Deezer }
         test:
           - { type: track, name: Track }

@@ -38,7 +38,6 @@
     "album",
     "artist",
     "playlist",
-    "iTunes",
     "mpeg-4",
     "m4a",
     "audio",
@@ -56,7 +55,6 @@
   "dependencies": {
     "@ffmpeg/core": "^0.11.0",
     "@ffmpeg/ffmpeg": "^0.11.0",
-    "@yujinakayama/apple-music": "^0.4.1",
     "async": "^3.2.4",
     "bluebird": "^3.7.2",
     "cachedir": "^2.3.0",
@@ -108,15 +106,11 @@
         "string-width": "7.2.0"
       }
     },
-    "@yujinakayama/apple-music": {
-      "axios": "1.7.2"
-    },
     "@ffmpeg/ffmpeg": {
       "node-fetch": "2.7.0"
     }
   },
   "resolutions": {
-    "@yujinakayama/apple-music/axios": "1.7.2",
     "@ffmpeg/ffmpeg/node-fetch": "2.7.0",
     "public-ip/got": "13.0.0",
     "yt-search/node-fzf": "0.11.0",

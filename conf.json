@@ -49,9 +49,6 @@
     "sources": ["yt_music", "youtube"]
   },
   "services": {
-    "apple_music": {
-      "storefront": "us"
-    },
     "deezer": {
       "retries": 2
     }
