@@ -3194,7 +3194,7 @@ function prepCli(packageJson) {
       console.log('  /home/miraclx/.config/FreyrCLI/test.x4p');
       console.log('');
       console.log('  # unless unencrypted, will ask to decrypt profile');
-      console.log('  $ freyr --profile test deezer:playlist:1963962142');
+      console.log('  $ freyr --profile test https://www.youtube.com/watch?v=jBmhsV9NKPg');
       console.log('    ? Enter an encryption key: **********');
       console.log('  [...]');
     });
@@ -3342,24 +3342,24 @@ function prepCli(packageJson) {
       console.log("");
       console.log("Examples:");
       console.log(
-        "  $ freyr urify -t https://www.deezer.com/en/playlist/1963962142",
-      );
-      console.log("  deezer:playlist:1963962142");
-      console.log("");
-      console.log(
         "  $ freyr urify -t https://www.youtube.com/watch?v=jBmhsV9NKPg",
       );
       console.log("  youtube:track:jBmhsV9NKPg");
       console.log("");
       console.log(
+        "  $ freyr urify -t https://youtu.be/jBmhsV9NKPg",
+      );
+      console.log("  youtube:track:jBmhsV9NKPg");
+      console.log("");
+      console.log(
         [
-          "  $ echo https://www.deezer.com/en/artist/5340439 \\",
-          "         https://www.deezer.com/en/track/642674232 \\",
+          "  $ echo https://www.youtube.com/watch?v=jBmhsV9NKPg \\",
+          "         https://youtu.be/jBmhsV9NKPg \\",
           "      | freyr urify -t",
         ].join("\n"),
       );
-      console.log("  deezer:artist:5340439");
-      console.log("  deezer:track:642674232");
+      console.log("  youtube:track:jBmhsV9NKPg");
+      console.log("  youtube:track:jBmhsV9NKPg");
     });
 
   return program;

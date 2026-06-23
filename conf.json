@@ -48,9 +48,5 @@
     "cacheSize": 209715200,
     "sources": ["yt_music", "youtube"]
   },
-  "services": {
-    "deezer": {
-      "retries": 2
-    }
-  }
+  "services": {}
 }

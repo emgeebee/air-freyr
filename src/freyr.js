@@ -3,10 +3,9 @@ import _sortBy from 'lodash.sortby';
 
 import symbols from './symbols.js';
 import {YouTube, YouTubeMusic} from './services/youtube.js';
-import Deezer from './services/deezer.js';
 
 export default class FreyrCore {
-  static ENGINES = [Deezer, YouTube, YouTubeMusic];
+  static ENGINES = [YouTube, YouTubeMusic];
 
   static getBitrates() {
     return Array.from(
