@@ -64,11 +64,7 @@ async function main() {
   try {
     await writeFile(
       queueFile,
-      [
-        'Kids,Artist,Title,https://example.com/active # note',
-        '# Kids,Disabled,Old,https://example.com/disabled',
-        '',
-      ].join('\n'),
+      ['Kids,Artist,Title,https://example.com/active # note', '# Kids,Disabled,Old,https://example.com/disabled', ''].join('\n'),
       'utf8',
     );
     await writeFile(path.join(queueDir, 'ignored.md'), '# not a queue', 'utf8');
