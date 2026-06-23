@@ -18,7 +18,8 @@
     "serve": "node ./cli.js serve",
     "arlo": "node ./cli.js -i arlo.txt",
     "pop": "node ./cli.js -i pop.txt",
-    "test": "$NODE test/index.js"
+    "test": "node test/queue_server.js",
+    "test:providers": "$NODE test/index.js"
   },
   "files": [
     "src",
