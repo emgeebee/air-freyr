@@ -15,7 +15,8 @@ const VERSION = JSON.parse(
 ).version;
 
 function stripAnsi(text) {
-  return text.replace(/\x1b\[[0-9;]*m/g, '');
+  const escapeChar = String.fromCharCode(27);
+  return text.replace(new RegExp(`${escapeChar}\\[[0-9;]*m`, 'g'), '');
 }
 
 function tailLines(text, count = 4) {
