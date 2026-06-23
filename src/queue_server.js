@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { readFileSync, constants as fsConstants } from 'fs';
-import { access, appendFile, mkdir, readFile } from 'fs/promises';
+import { access, appendFile, mkdir, readFile, readdir, writeFile } from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -37,6 +37,10 @@ async function assertReadable(filePath, label) {
 
 function apiJson(body) {
   return {version: VERSION, ...body};
+}
+
+function apiError(res, err) {
+  res.status(400).json(apiJson({ok: false, error: err.message}));
 }
 
 export async function loadProjectConfig(configPath = DEFAULT_CONF_PATH) {
@@ -95,6 +99,147 @@ function resolveQueueFile(dataDir, file) {
     throw new Error('`file` must resolve within the data directory');
   if (!resolved.endsWith('.txt')) throw new Error('`file` must be a .txt queue file');
   return resolved;
+}
+
+function parseCsvLine(line) {
+  const parts = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i += 1;
+      } else inQuotes = !inQuotes;
+    } else if (ch === ',' && !inQuotes) {
+      parts.push(current.trim());
+      current = '';
+    } else current += ch;
+  }
+  parts.push(current.trim());
+  return parts;
+}
+
+function splitEditableLines(text) {
+  const trailingNewline = /\r?\n$/.test(text);
+  const lines = text ? text.split(/\r?\n/) : [];
+  if (trailingNewline) lines.pop();
+  return {
+    lines,
+    newline: text.includes('\r\n') ? '\r\n' : '\n',
+    trailingNewline,
+  };
+}
+
+function joinEditableLines(lines, newline, trailingNewline) {
+  if (lines.length === 0) return '';
+  return `${lines.join(newline)}${trailingNewline ? newline : ''}`;
+}
+
+function parseQueueEntry(rawLine, index) {
+  const raw = rawLine.trim();
+  if (!raw) return null;
+
+  const disabled = /^\s*#/.test(rawLine);
+  const body = disabled ? rawLine.replace(/^\s*#\s?/, '') : rawLine;
+  const note = (body.match(/#(.*)$/) || [])[1]?.trim() || '';
+  const content = body.replace(/#.*$/, '').trim();
+  const parts = parseCsvLine(content);
+  const urlIndex = parts.findIndex(part => /^https?:\/\//i.test(part));
+  const fields = urlIndex >= 0 ? parts.slice(0, urlIndex) : [];
+  const url = urlIndex >= 0 ? parts.slice(urlIndex).join(',').trim() : content;
+  const [genre, artist, title] = fields;
+  const label = [artist, title].filter(Boolean).join(' - ') || title || url || raw;
+
+  return {
+    line: index + 1,
+    disabled,
+    genre: genre || '',
+    artist: artist || '',
+    title: title || '',
+    url: url || '',
+    note,
+    label,
+    raw,
+  };
+}
+
+async function readQueueEntries(filePath) {
+  const text = await readFile(filePath, 'utf8');
+  return text
+    .split(/\r?\n/)
+    .map((line, index) => parseQueueEntry(line, index))
+    .filter(Boolean);
+}
+
+function summarizeEntries(entries) {
+  return {
+    total: entries.length,
+    active: entries.filter(entry => !entry.disabled).length,
+    disabled: entries.filter(entry => entry.disabled).length,
+  };
+}
+
+async function listQueueFiles(dataDir) {
+  let dirents;
+  try {
+    dirents = await readdir(dataDir, {withFileTypes: true});
+  } catch (err) {
+    if (err.code === 'ENOENT') return [];
+    throw err;
+  }
+
+  return Promise.all(
+    dirents
+      .filter(dirent => dirent.isFile() && dirent.name.endsWith('.txt'))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(async dirent => {
+        const filePath = resolveQueueFile(dataDir, dirent.name);
+        const entries = await readQueueEntries(filePath);
+        return {
+          file: dirent.name,
+          filePath,
+          ...summarizeEntries(entries),
+        };
+      }),
+  );
+}
+
+async function readQueueFile(dataDir, file) {
+  const filePath = resolveQueueFile(dataDir, file);
+  const entries = await readQueueEntries(filePath);
+  return {
+    file,
+    filePath,
+    entries,
+    ...summarizeEntries(entries),
+  };
+}
+
+async function updateQueueFileItem(dataDir, file, line, action) {
+  const filePath = resolveQueueFile(dataDir, file);
+  const lineNumber = Number.parseInt(line, 10);
+  if (!Number.isInteger(lineNumber) || lineNumber < 1) throw new Error('`line` must be a positive integer');
+  if (!['disable', 'delete'].includes(action)) throw new Error('`action` must be "disable" or "delete"');
+
+  const text = await readFile(filePath, 'utf8');
+  const {lines, newline, trailingNewline} = splitEditableLines(text);
+  const index = lineNumber - 1;
+  if (index >= lines.length) throw new Error('`line` does not exist in the selected file');
+  if (!lines[index].trim()) throw new Error('`line` must reference a song entry');
+
+  if (action === 'disable') {
+    if (!/^\s*#/.test(lines[index])) {
+      const [, indent, body] = lines[index].match(/^(\s*)(.*)$/);
+      lines[index] = `${indent}# ${body}`;
+    }
+  } else {
+    lines.splice(index, 1);
+  }
+
+  await writeFile(filePath, joinEditableLines(lines, newline, trailingNewline), 'utf8');
+  return readQueueFile(dataDir, file);
 }
 
 function normalizeAddPayload(body) {
@@ -166,6 +311,350 @@ class FileDownloadScheduler {
         }
       });
   }
+}
+
+function queueUiHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AirFreyr Queues</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101827;
+      --panel: #172033;
+      --panel-soft: #1f2b43;
+      --text: #f5f7fb;
+      --muted: #9ca8bd;
+      --accent: #4dd599;
+      --danger: #ff6b6b;
+      --border: #2c3a55;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at top left, #1b5b76 0, transparent 32rem), var(--bg);
+      color: var(--text);
+      font-family: "Open Sans", "Helvetica Neue", Helvetica, Arial, sans-serif;
+    }
+    main {
+      width: min(1120px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 32px 0;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    h1, h2, p { margin-top: 0; }
+    h1 { margin-bottom: 6px; }
+    p { color: var(--muted); }
+    button {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 9px 12px;
+      background: var(--panel-soft);
+      color: var(--text);
+      cursor: pointer;
+      font: inherit;
+    }
+    button:hover { border-color: var(--accent); }
+    button.danger:hover { border-color: var(--danger); color: #ffd7d7; }
+    button:disabled { cursor: not-allowed; opacity: 0.55; }
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+      gap: 18px;
+    }
+    .panel {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: rgba(23, 32, 51, 0.92);
+      box-shadow: 0 20px 80px rgba(0, 0, 0, 0.24);
+      overflow: hidden;
+    }
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 18px;
+      border-bottom: 1px solid var(--border);
+    }
+    .panel-head h2 { margin: 0; font-size: 1rem; }
+    .list-button {
+      display: block;
+      width: 100%;
+      border: 0;
+      border-bottom: 1px solid var(--border);
+      border-radius: 0;
+      padding: 14px 18px;
+      background: transparent;
+      text-align: left;
+    }
+    .list-button.active { background: rgba(77, 213, 153, 0.12); }
+    .list-button strong { display: block; margin-bottom: 4px; }
+    .meta, .empty, .raw {
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+    .empty { padding: 18px; }
+    .songs { display: grid; gap: 12px; padding: 18px; }
+    .song {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: start;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(31, 43, 67, 0.72);
+    }
+    .song.disabled { opacity: 0.68; }
+    .song h3 {
+      margin: 0 0 6px;
+      font-size: 1rem;
+    }
+    .raw {
+      margin-top: 8px;
+      overflow-wrap: anywhere;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    .badge {
+      display: inline-block;
+      margin-left: 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 2px 8px;
+      color: var(--muted);
+      font-size: 0.75rem;
+      vertical-align: middle;
+    }
+    .error {
+      margin-bottom: 16px;
+      border: 1px solid rgba(255, 107, 107, 0.6);
+      border-radius: 12px;
+      padding: 12px 14px;
+      background: rgba(255, 107, 107, 0.12);
+      color: #ffd7d7;
+    }
+    @media (max-width: 760px) {
+      header, .song { display: block; }
+      .layout { grid-template-columns: 1fr; }
+      .actions { justify-content: flex-start; margin-top: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>AirFreyr Queues</h1>
+        <p>View queue lists, comment out songs, or remove songs from a list.</p>
+      </div>
+      <button id="refresh" type="button">Refresh</button>
+    </header>
+    <div id="error" class="error" hidden></div>
+    <section class="layout">
+      <aside class="panel">
+        <div class="panel-head">
+          <h2>Lists</h2>
+          <span id="list-count" class="meta"></span>
+        </div>
+        <div id="lists"></div>
+      </aside>
+      <section class="panel">
+        <div class="panel-head">
+          <h2 id="songs-title">Songs</h2>
+          <span id="songs-count" class="meta"></span>
+        </div>
+        <div id="songs" class="songs">
+          <div class="empty">Choose a list to view its songs.</div>
+        </div>
+      </section>
+    </section>
+  </main>
+  <script>
+    var state = {lists: [], selectedFile: null};
+    var listsEl = document.getElementById('lists');
+    var songsEl = document.getElementById('songs');
+    var errorEl = document.getElementById('error');
+    var listCountEl = document.getElementById('list-count');
+    var songsTitleEl = document.getElementById('songs-title');
+    var songsCountEl = document.getElementById('songs-count');
+
+    function text(value) {
+      return value == null ? '' : String(value);
+    }
+
+    function setError(message) {
+      errorEl.hidden = !message;
+      errorEl.textContent = message || '';
+    }
+
+    function requestJson(url, options) {
+      return fetch(url, options).then(function(res) {
+        return res.json().then(function(body) {
+          if (!res.ok || body.ok === false) throw new Error(body.error || 'Request failed');
+          return body;
+        });
+      });
+    }
+
+    function renderLists() {
+      listCountEl.textContent = state.lists.length ? state.lists.length + ' list(s)' : '';
+      if (!state.lists.length) {
+        listsEl.innerHTML = '<div class="empty">No .txt queue lists found.</div>';
+        return;
+      }
+
+      listsEl.innerHTML = '';
+      state.lists.forEach(function(list) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'list-button' + (list.file === state.selectedFile ? ' active' : '');
+        button.innerHTML = '<strong></strong><span class="meta"></span>';
+        button.querySelector('strong').textContent = list.file;
+        button.querySelector('.meta').textContent =
+          list.total + ' songs, ' + list.active + ' active, ' + list.disabled + ' disabled';
+        button.addEventListener('click', function() {
+          loadList(list.file);
+        });
+        listsEl.appendChild(button);
+      });
+    }
+
+    function songTitle(entry) {
+      if (entry.artist && entry.title) return entry.artist + ' - ' + entry.title;
+      return entry.title || entry.artist || entry.url || entry.raw;
+    }
+
+    function songMeta(entry) {
+      var values = [];
+      if (entry.genre) values.push(entry.genre);
+      if (entry.note) values.push(entry.note);
+      if (entry.url) values.push(entry.url);
+      return values.join(' | ');
+    }
+
+    function renderSongs(list) {
+      songsTitleEl.textContent = list.file || 'Songs';
+      songsCountEl.textContent = list.total + ' songs';
+      songsEl.innerHTML = '';
+
+      if (!list.entries.length) {
+        songsEl.innerHTML = '<div class="empty">This list is empty.</div>';
+        return;
+      }
+
+      list.entries.forEach(function(entry) {
+        var row = document.createElement('article');
+        row.className = 'song' + (entry.disabled ? ' disabled' : '');
+        row.innerHTML =
+          '<div>' +
+          '<h3></h3>' +
+          '<div class="meta"></div>' +
+          '<div class="raw"></div>' +
+          '</div>' +
+          '<div class="actions"></div>';
+        row.querySelector('h3').textContent = songTitle(entry);
+        if (entry.disabled) {
+          var badge = document.createElement('span');
+          badge.className = 'badge';
+          badge.textContent = 'disabled';
+          row.querySelector('h3').appendChild(badge);
+        }
+        row.querySelector('.meta').textContent = songMeta(entry);
+        row.querySelector('.raw').textContent = 'Line ' + entry.line + ': ' + text(entry.raw);
+
+        var actions = row.querySelector('.actions');
+        if (!entry.disabled) {
+          var disable = document.createElement('button');
+          disable.type = 'button';
+          disable.textContent = 'Disable';
+          disable.addEventListener('click', function() {
+            mutateSong(entry.line, 'disable');
+          });
+          actions.appendChild(disable);
+        }
+
+        var remove = document.createElement('button');
+        remove.type = 'button';
+        remove.className = 'danger';
+        remove.textContent = 'Delete';
+        remove.addEventListener('click', function() {
+          if (window.confirm('Delete line ' + entry.line + ' from ' + list.file + '?')) mutateSong(entry.line, 'delete');
+        });
+        actions.appendChild(remove);
+        songsEl.appendChild(row);
+      });
+    }
+
+    function refreshLists() {
+      setError('');
+      return requestJson('/api/lists')
+        .then(function(body) {
+          state.lists = body.lists || [];
+          if (
+            state.selectedFile &&
+            !state.lists.some(function(list) {
+              return list.file === state.selectedFile;
+            })
+          ) {
+            state.selectedFile = null;
+          }
+          renderLists();
+          if (state.selectedFile) return loadList(state.selectedFile);
+          return null;
+        })
+        .catch(function(err) {
+          setError(err.message);
+        });
+    }
+
+    function loadList(file) {
+      setError('');
+      state.selectedFile = file;
+      renderLists();
+      songsEl.innerHTML = '<div class="empty">Loading...</div>';
+      return requestJson('/api/list?file=' + encodeURIComponent(file))
+        .then(renderSongs)
+        .catch(function(err) {
+          setError(err.message);
+        });
+    }
+
+    function mutateSong(line, action) {
+      setError('');
+      return requestJson('/api/list/item', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({file: state.selectedFile, line: line, action: action}),
+      })
+        .then(function(body) {
+          renderSongs(body);
+          return refreshLists();
+        })
+        .catch(function(err) {
+          setError(err.message);
+        });
+    }
+
+    document.getElementById('refresh').addEventListener('click', refreshLists);
+    refreshLists();
+  </script>
+</body>
+</html>`;
 }
 
 export default class QueueServer {
@@ -246,6 +735,10 @@ export default class QueueServer {
 
     const app = express().use(cors()).use(express.json({limit: '64kb'}));
 
+    app.get('/', (_req, res) => {
+      res.type('html').send(queueUiHtml());
+    });
+
     app.get('/health', (_req, res) => {
       res.json(
         apiJson({
@@ -254,6 +747,35 @@ export default class QueueServer {
           outputDir: this.#opts.outputDir ? path.resolve(this.#opts.outputDir) : null,
         }),
       );
+    });
+
+    app.get('/api/lists', async (_req, res) => {
+      try {
+        res.json(apiJson({ok: true, lists: await listQueueFiles(this.#opts.queueDir)}));
+      } catch (err) {
+        apiError(res, err);
+      }
+    });
+
+    app.get('/api/list', async (req, res) => {
+      try {
+        res.json(apiJson({ok: true, ...(await readQueueFile(this.#opts.queueDir, req.query.file))}));
+      } catch (err) {
+        apiError(res, err);
+      }
+    });
+
+    app.post('/api/list/item', async (req, res) => {
+      try {
+        res.json(
+          apiJson({
+            ok: true,
+            ...(await updateQueueFileItem(this.#opts.queueDir, req.body.file, req.body.line, req.body.action)),
+          }),
+        );
+      } catch (err) {
+        apiError(res, err);
+      }
     });
 
     app.post('/add', async (req, res) => {
@@ -273,7 +795,7 @@ export default class QueueServer {
           }),
         );
       } catch (err) {
-        res.status(400).json(apiJson({ok: false, error: err.message}));
+        apiError(res, err);
       }
     });
 
@@ -288,7 +810,7 @@ export default class QueueServer {
           }),
         );
       } catch (err) {
-        res.status(400).json(apiJson({ok: false, error: err.message}));
+        apiError(res, err);
       }
     });
 
