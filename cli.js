@@ -542,7 +542,8 @@ function isPermanentFeedError(err) {
 
 function cleanTrackTitle(name, artist) {
   let cleaned = (name || "")
-    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}\uFE0F]/gu, "")
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
+    .replace(/\uFE0F/gu, "")
     .replace(/#\S*/g, "")
     .replace(/\s+/g, " ")
     .trim();
