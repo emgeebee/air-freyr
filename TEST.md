@@ -17,5 +17,4 @@ The queue-server test covers:
 - deleting a song line
 - invalid list mutation handling
 
-Provider download fixture tests were removed along with the unused Spotify,
-Apple Music, and Deezer providers.
+Provider download fixture tests were removed along with the unused third-party providers.
