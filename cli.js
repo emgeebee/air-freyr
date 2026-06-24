@@ -588,14 +588,22 @@ async function mirrorDownloadedTrack(
   { overwrite = true, onWarn = () => {} } = {},
 ) {
   const paths = resolveCompilationMirrorPaths(batchMeta, track, format);
-  if (!paths) return [];
+  if (!paths) return { copied: [], notes: ["missing genre or artist"] };
   const copied = [];
+  const notes = [];
   const source = xpath.resolve(sourcePath);
+  if (!mirrorRoots?.length) notes.push("no writable mirror directories");
   for (const root of mirrorRoots) {
     const destDir = xpath.join(root, paths.trackPath);
     const dest = xpath.join(destDir, paths.outFileName);
-    if (xpath.resolve(dest) === source) continue;
-    if (!overwrite && (await maybeStat(dest))) continue;
+    if (xpath.resolve(dest) === source) {
+      notes.push(`skipped same path: ${dest}`);
+      continue;
+    }
+    if (!overwrite && (await maybeStat(dest))) {
+      notes.push(`already exists: ${dest}`);
+      continue;
+    }
     try {
       await assertDirWritable(destDir, "Mirror directory");
       await fs.copyFile(sourcePath, dest);
@@ -606,10 +614,12 @@ async function mirrorDownloadedTrack(
         err?.code === "EACCES" || err?.code === "EPERM"
           ? `permission denied for [${dest}]`
           : err?.message || String(err);
-      onWarn(`Mirror copy skipped (${detail})`);
+      const message = `Mirror copy skipped (${detail})`;
+      notes.push(message);
+      onWarn(message);
     }
   }
-  return copied;
+  return { copied, notes };
 }
 
 async function ensureBatchTrackDirectories(
@@ -2054,7 +2064,7 @@ async function init(packageJson, queries, options) {
           throw err;
         }
       });
-      const mirroredPaths =
+      const mirrorResult =
         meta.batchMeta && MIRROR_ROOTS.length
           ? await mirrorDownloadedTrack(
               meta.outFile.path,
@@ -2067,7 +2077,8 @@ async function init(packageJson, queries, options) {
                   stackLogger.warn(`\x1b[33m[!]\x1b[0m ${msg}`),
               },
             )
-          : [];
+          : { copied: [], notes: [] };
+      const mirroredPaths = mirrorResult.copied;
       return {
         wroteImage,
         finalSize: (await fs.stat(meta.outFile.path)).size,
@@ -2768,7 +2779,7 @@ async function init(packageJson, queries, options) {
               fileExistsIn.find(
                 (path) => xpath.resolve(path) === xpath.resolve(primaryPath),
               ) || fileExistsIn[0];
-            const mirroredPaths = MIRROR_ROOTS.length
+            const mirrorResult = MIRROR_ROOTS.length
               ? await mirrorDownloadedTrack(
                   sourcePath,
                   MIRROR_ROOTS,
@@ -2781,7 +2792,11 @@ async function init(packageJson, queries, options) {
                       queryLogger.log(`\x1b[33m[!] ${msg}\x1b[0m`),
                   },
                 )
-              : [];
+              : {
+                  copied: [],
+                  notes: ["no writable mirror directories"],
+                };
+            const mirroredPaths = mirrorResult.copied;
             if (options.remirror) {
               queryLogger.log(
                 `\x1b[33m[\u00bb] Already exists — re-mirroring copies\x1b[0m`,
@@ -2802,6 +2817,10 @@ async function init(packageJson, queries, options) {
               queryLogger.log(
                 `\x1b[33m    mirrored: ${mirroredPaths.map((path) => xpath.resolve(path)).join(", ")}\x1b[0m`,
               );
+            else if (mirrorResult.notes.length)
+              queryLogger.log(
+                `\x1b[33m    mirror: ${mirrorResult.notes.slice(0, 3).join(" | ")}\x1b[0m`,
+              );
             return [
               {
                 meta: {
@@ -2814,7 +2833,9 @@ async function init(packageJson, queries, options) {
                   : mirroredPaths.length
                     ? "mirrored"
                     : "exists",
-                postprocess: mirroredPaths.length ? { mirroredPaths } : undefined,
+                postprocess: mirroredPaths.length
+                  ? { mirroredPaths, mirrorNotes: mirrorResult.notes }
+                  : { mirrorNotes: mirrorResult.notes },
                 complete: fileExistsIn.some(
                   (path) => xpath.resolve(path) === xpath.resolve(primaryPath),
                 ),
@@ -3080,7 +3101,7 @@ async function init(packageJson, queries, options) {
         "[\u2022] No new audio was written (existing files were skipped and/or mirrored)",
       );
     stackLogger.log(
-      `[airfreyr] batch: queries=${totalQueries.length} tracks=${trackStats.length} existing=${finalStats.existing} passed=${finalStats.passed} skipped=${finalStats.skipped} failed=${finalStats.failed} mirrored=${finalStats.mirrored} out=${xbytes(finalStats.outSize)}`,
+      `[airfreyr] batch: queries=${totalQueries.length} tracks=${trackStats.length} existing=${finalStats.existing} passed=${finalStats.passed} skipped=${finalStats.skipped} failed=${finalStats.failed} mirrored=${finalStats.mirrored} mirrors=${MIRROR_ROOTS.length}/${configuredMirrorRoots.length} out=${xbytes(finalStats.outSize)}`,
     );
     stackLogger.log("===============================");
   }
