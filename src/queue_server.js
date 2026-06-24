@@ -1,6 +1,6 @@
 import { spawn } from 'child_process';
 import { readFileSync, constants as fsConstants } from 'fs';
-import { access, appendFile, mkdir, readFile, readdir, writeFile } from 'fs/promises';
+import { access, appendFile, mkdir, readFile, readdir, rename, writeFile } from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -300,6 +300,27 @@ async function createQueueFile(dataDir, file) {
   return readQueueFile(dataDir, name);
 }
 
+async function renameQueueFile(dataDir, file, newFile) {
+  const from = normalizeQueueFileName(file);
+  const to = normalizeQueueFileName(newFile);
+  if (from === to) return readQueueFile(dataDir, to);
+  const fromPath = resolveQueueFile(dataDir, from);
+  const toPath = resolveQueueFile(dataDir, to);
+  try {
+    await access(fromPath, fsConstants.F_OK);
+  } catch {
+    throw new Error('`file` does not exist');
+  }
+  try {
+    await access(toPath, fsConstants.F_OK);
+    throw new Error('`newFile` already exists');
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  await rename(fromPath, toPath);
+  return {from, file: to, ...(await readQueueFile(dataDir, to))};
+}
+
 async function updateQueueFileItem(dataDir, file, line, action) {
   const filePath = resolveQueueFile(dataDir, file);
   const lineNumber = Number.parseInt(line, 10);
@@ -325,19 +346,65 @@ async function updateQueueFileItem(dataDir, file, line, action) {
   return readQueueFile(dataDir, file);
 }
 
+function titleCaseGenreStem(stem) {
+  return stem
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+}
+
+export function genreFromQueueFile(file) {
+  const stem = path.basename(String(file).trim()).replace(/\.txt$/i, '');
+  if (!stem) throw new Error('invalid queue file name');
+  return titleCaseGenreStem(stem);
+}
+
+function parseQueueFields(fields, fileGenre, lineNumber) {
+  let genre;
+  let artist;
+  let title;
+  if (fileGenre) {
+    genre = fileGenre;
+    if (fields.length >= 3) {
+      artist = fields[1];
+      title = fields.slice(2).join(',');
+    } else if (fields.length === 2) {
+      artist = fields[0];
+      title = fields[1];
+    } else if (fields.length === 1) {
+      artist = fields[0];
+      title = '';
+    } else throw new Error(`line ${lineNumber}: artist is required`);
+  } else {
+    genre = fields[0];
+    artist = fields[1];
+    if (!genre) throw new Error(`line ${lineNumber}: genre is required`);
+    if (!artist) throw new Error(`line ${lineNumber}: artist is required`);
+    title = fields.length > 2 ? fields.slice(2).join(',') : '';
+  }
+  if (!artist) throw new Error(`line ${lineNumber}: artist is required`);
+  return {genre, artist, title};
+}
+
 function normalizeAddPayload(body) {
   if (!body || typeof body !== 'object') throw new Error('request body must be a JSON object');
-  const {file, genre, artist, title} = body;
+  const {file, artist, title} = body;
   const url = body.path ?? body.url;
   if (!file) throw new Error('`file` is required');
-  if (!genre) throw new Error('`genre` is required');
   if (!artist) throw new Error('`artist` is required');
   if (!url) throw new Error('`path` is required');
   if (!/^https?:\/\//i.test(url)) throw new Error('`path` must be an http(s) URL');
-  return {file, genre, artist, title: title || '', path: url};
+  return {
+    file,
+    genre: body.genre || genreFromQueueFile(file),
+    artist,
+    title: title || '',
+    path: url,
+  };
 }
 
-function parseBulkQueueLine(rawLine, lineNumber) {
+function parseBulkQueueLine(rawLine, lineNumber, fileGenre) {
   const trimmed = rawLine.trim();
   if (!trimmed) return null;
   const disabled = /^\s*#/.test(rawLine);
@@ -349,11 +416,7 @@ function parseBulkQueueLine(rawLine, lineNumber) {
   if (urlIndex < 0) throw new Error(`line ${lineNumber}: missing http(s) URL`);
   const fields = parts.slice(0, urlIndex);
   const url = parts.slice(urlIndex).join(',').trim();
-  const genre = fields[0];
-  const artist = fields[1];
-  if (!genre) throw new Error(`line ${lineNumber}: genre is required`);
-  if (!artist) throw new Error(`line ${lineNumber}: artist is required`);
-  const title = fields.length > 2 ? fields.slice(2).join(',') : '';
+  const {genre, artist, title} = parseQueueFields(fields, fileGenre, lineNumber);
   return {genre, artist, title, path: url, disabled};
 }
 
@@ -362,10 +425,11 @@ function formatBulkQueueLine(item) {
   return item.disabled ? `# ${line}\n` : formatBatchCsvLine(item);
 }
 
-function parseBulkQueueText(text) {
+function parseBulkQueueText(text, file) {
+  const fileGenre = genreFromQueueFile(file);
   const items = [];
   for (const [index, rawLine] of text.split(/\r?\n/).entries()) {
-    const item = parseBulkQueueLine(rawLine, index + 1);
+    const item = parseBulkQueueLine(rawLine, index + 1, fileGenre);
     if (item) items.push(item);
   }
   if (!items.length) throw new Error('no valid queue lines found');
@@ -374,7 +438,7 @@ function parseBulkQueueText(text) {
 
 async function appendBulkQueueLines(dataDir, file, text) {
   const filePath = resolveQueueFile(dataDir, file);
-  const items = parseBulkQueueText(text);
+  const items = parseBulkQueueText(text, file);
   await mkdir(path.dirname(filePath), {recursive: true});
   await appendFile(filePath, items.map(formatBulkQueueLine).join(''), 'utf8');
   return {file, added: items.length, ...(await readQueueFile(dataDir, file))};
@@ -388,6 +452,7 @@ class FileDownloadScheduler {
       running: false,
       pending: false,
       lastError: null,
+      lastLog: null,
       lastStartedAt: null,
       lastFinishedAt: null,
       lastExitCode: null,
@@ -406,11 +471,17 @@ class FileDownloadScheduler {
         running: false,
         pending: false,
         lastError: null,
+        lastLog: null,
         lastStartedAt: null,
         lastFinishedAt: null,
         lastExitCode: null,
       }
     );
+  }
+
+  setLastLog(filePath, log) {
+    const state = this.#state.get(filePath);
+    if (state) state.lastLog = log;
   }
 
   setExitCode(filePath, code) {
@@ -422,6 +493,7 @@ class FileDownloadScheduler {
     state.running = true;
     state.lastStartedAt = new Date().toISOString();
     state.lastError = null;
+    state.lastLog = null;
     state.lastExitCode = null;
     runner(filePath)
       .catch(err => {
@@ -677,6 +749,30 @@ function queueUiHtml(version) {
       font-size: 0.85rem;
       line-height: 1.45;
     }
+    .download-status {
+      margin: 0 18px 18px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 14px;
+      background: rgba(31, 43, 67, 0.72);
+    }
+    .download-status h3 {
+      margin: 0 0 8px;
+      font-size: 0.95rem;
+    }
+    .download-status pre {
+      margin: 8px 0 0;
+      padding: 10px 12px;
+      border-radius: 10px;
+      background: rgba(8, 12, 20, 0.55);
+      color: #d7deea;
+      font: 0.8rem/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .status-ok { color: var(--accent); }
+    .status-warn { color: #ffd166; }
+    .status-bad { color: #ffb4b4; }
     .modal-actions {
       display: flex;
       justify-content: flex-end;
@@ -719,11 +815,18 @@ function queueUiHtml(version) {
           <div class="panel-head-actions">
             <span id="songs-count" class="meta"></span>
             <button id="paste-lines" type="button" disabled>Paste lines</button>
+            <button id="rename-list" type="button" disabled>Rename</button>
             <button id="add-song" type="button" class="primary" disabled>Add song</button>
           </div>
         </div>
         <div id="songs" class="songs">
           <div class="empty">Choose a list to view its songs.</div>
+        </div>
+        <div id="download-status" class="download-status" hidden>
+          <h3>Download</h3>
+          <div id="download-summary" class="meta"></div>
+          <pre id="download-log" hidden></pre>
+          <p class="hint">Container logs: <code>docker logs --tail 100 airfreyr</code></p>
         </div>
       </section>
     </section>
@@ -736,10 +839,7 @@ function queueUiHtml(version) {
       </div>
       <form id="add-song-form">
         <div class="modal-body">
-          <div class="field">
-            <label for="add-genre">Genre</label>
-            <input id="add-genre" name="genre" type="text" required autocomplete="off">
-          </div>
+          <p class="hint">Genre is taken from the list filename (<span id="add-genre-hint"></span>).</p>
           <div class="field">
             <label for="add-artist">Artist</label>
             <input id="add-artist" name="artist" type="text" required autocomplete="off">
@@ -768,7 +868,7 @@ function queueUiHtml(version) {
       </div>
       <form id="paste-lines-form">
         <div class="modal-body">
-          <p class="hint">One song per line as CSV: <code>genre,artist,title,url</code>. Title is optional. Lines starting with <code>#</code> are saved as disabled entries. Blank lines and plain comments are skipped.</p>
+          <p class="hint">One song per line as CSV: <code>artist,title,url</code> (title optional). Genre comes from the list filename. Lines starting with <code>#</code> are saved as disabled entries. Blank lines and plain comments are skipped.</p>
           <div class="field">
             <label for="paste-lines-input">Queue lines</label>
             <textarea id="paste-lines-input" name="lines" required placeholder="Kids,Moana,You're Welcome,https://www.youtube.com/watch?v=G8QjumNNNBY"></textarea>
@@ -777,6 +877,27 @@ function queueUiHtml(version) {
         <div class="modal-actions">
           <button id="paste-lines-cancel" type="button">Cancel</button>
           <button type="submit" class="primary">Add lines &amp; download</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <div id="rename-list-modal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="rename-list-title">
+      <div class="modal-head">
+        <h2 id="rename-list-title">Rename list</h2>
+        <button id="rename-list-close" type="button" aria-label="Close">Close</button>
+      </div>
+      <form id="rename-list-form">
+        <div class="modal-body">
+          <p class="hint">Genre is taken from the list name. Use spaces or hyphens for multi-word genres, e.g. <code>folk rock.txt</code> → Folk Rock.</p>
+          <div class="field">
+            <label for="rename-list-input">List name</label>
+            <input id="rename-list-input" name="newFile" type="text" required autocomplete="off">
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="rename-list-cancel" type="button">Cancel</button>
+          <button type="submit" class="primary">Rename</button>
         </div>
       </form>
     </div>
@@ -796,14 +917,34 @@ function queueUiHtml(version) {
     var addSongForm = document.getElementById('add-song-form');
     var pasteLinesModal = document.getElementById('paste-lines-modal');
     var pasteLinesForm = document.getElementById('paste-lines-form');
+    var renameListBtn = document.getElementById('rename-list');
+    var renameListModal = document.getElementById('rename-list-modal');
+    var renameListForm = document.getElementById('rename-list-form');
+    var downloadStatusEl = document.getElementById('download-status');
+    var downloadSummaryEl = document.getElementById('download-summary');
+    var downloadLogEl = document.getElementById('download-log');
+    var statusPollTimer = null;
 
     function text(value) {
       return value == null ? '' : String(value);
     }
 
+    function genreFromListFile(file) {
+      var stem = String(file || '').replace(/.*[/\\]/, '').replace(/\\.txt$/i, '');
+      if (!stem) return 'Unknown';
+      return stem
+        .split(/[\s_-]+/)
+        .filter(Boolean)
+        .map(function(word) {
+          return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+        })
+        .join(' ');
+    }
+
     function setListActionsEnabled(enabled) {
       addSongBtn.disabled = !enabled;
       pasteLinesBtn.disabled = !enabled;
+      renameListBtn.disabled = !enabled;
     }
 
     function openAddSongModal() {
@@ -813,8 +954,9 @@ function queueUiHtml(version) {
       }
       setError('');
       document.getElementById('add-song-title').textContent = 'Add song to ' + state.selectedFile;
+      document.getElementById('add-genre-hint').textContent = genreFromListFile(state.selectedFile);
       addSongModal.hidden = false;
-      document.getElementById('add-genre').focus();
+      document.getElementById('add-artist').focus();
     }
 
     function closeAddSongModal() {
@@ -838,6 +980,25 @@ function queueUiHtml(version) {
       pasteLinesForm.reset();
     }
 
+    function openRenameListModal() {
+      if (!state.selectedFile) {
+        setError('Choose a list before renaming');
+        return;
+      }
+      setError('');
+      document.getElementById('rename-list-title').textContent =
+        'Rename ' + genreFromListFile(state.selectedFile);
+      document.getElementById('rename-list-input').value = state.selectedFile.replace(/\\.txt$/i, '');
+      renameListModal.hidden = false;
+      document.getElementById('rename-list-input').focus();
+      document.getElementById('rename-list-input').select();
+    }
+
+    function closeRenameListModal() {
+      renameListModal.hidden = true;
+      renameListForm.reset();
+    }
+
     function setVersion(version) {
       if (version) versionEl.textContent = 'v' + version;
     }
@@ -857,6 +1018,57 @@ function queueUiHtml(version) {
       });
     }
 
+    function renderDownloadStatus(download) {
+      if (!state.selectedFile || !download) {
+        downloadStatusEl.hidden = true;
+        return;
+      }
+      downloadStatusEl.hidden = false;
+      var parts = [];
+      if (download.running) parts.push('<span class="status-warn">running</span>');
+      if (download.pending) parts.push('<span class="status-warn">queued</span>');
+      if (!download.running && !download.pending && !download.lastError) {
+        parts.push('<span class="status-ok">idle</span>');
+      }
+      if (download.lastStartedAt) parts.push('started ' + download.lastStartedAt);
+      if (download.lastFinishedAt) parts.push('finished ' + download.lastFinishedAt);
+      if (download.lastExitCode != null) parts.push('exit ' + download.lastExitCode);
+      if (download.lastError) {
+        parts.push('<span class="status-bad">' + text(download.lastError) + '</span>');
+      }
+      downloadSummaryEl.innerHTML = parts.join(' · ');
+      if (download.lastLog) {
+        downloadLogEl.hidden = false;
+        downloadLogEl.textContent = download.lastLog;
+      } else {
+        downloadLogEl.hidden = true;
+        downloadLogEl.textContent = '';
+      }
+    }
+
+    function refreshDownloadStatus() {
+      if (!state.selectedFile) {
+        renderDownloadStatus(null);
+        return Promise.resolve();
+      }
+      return requestJson('/status?file=' + encodeURIComponent(state.selectedFile))
+        .then(function(body) {
+          renderDownloadStatus(body.download);
+          if (body.download && (body.download.running || body.download.pending)) {
+            if (!statusPollTimer) {
+              statusPollTimer = window.setInterval(refreshDownloadStatus, 3000);
+            }
+          } else if (statusPollTimer) {
+            window.clearInterval(statusPollTimer);
+            statusPollTimer = null;
+          }
+        })
+        .catch(function(err) {
+          downloadSummaryEl.textContent = err.message;
+          downloadStatusEl.hidden = false;
+        });
+    }
+
     function renderLists() {
       listCountEl.textContent = state.lists.length ? state.lists.length + ' list(s)' : '';
       if (!state.lists.length) {
@@ -870,7 +1082,7 @@ function queueUiHtml(version) {
         button.type = 'button';
         button.className = 'list-button' + (list.file === state.selectedFile ? ' active' : '');
         button.innerHTML = '<strong></strong><span class="meta"></span>';
-        button.querySelector('strong').textContent = list.file;
+        button.querySelector('strong').textContent = genreFromListFile(list.file);
         button.querySelector('.meta').textContent =
           list.total + ' songs, ' + list.active + ' active, ' + list.disabled + ' disabled';
         button.addEventListener('click', function() {
@@ -887,14 +1099,13 @@ function queueUiHtml(version) {
 
     function songMeta(entry) {
       var values = [];
-      if (entry.genre) values.push(entry.genre);
       if (entry.note) values.push(entry.note);
       if (entry.url) values.push(entry.url);
       return values.join(' | ');
     }
 
     function renderSongs(list) {
-      songsTitleEl.textContent = list.file || 'Songs';
+      songsTitleEl.textContent = list.file ? genreFromListFile(list.file) : 'Songs';
       songsCountEl.textContent = list.total + ' songs';
       songsEl.innerHTML = '';
 
@@ -976,7 +1187,10 @@ function queueUiHtml(version) {
       renderLists();
       songsEl.innerHTML = '<div class="empty">Loading...</div>';
       return requestJson('/api/list?file=' + encodeURIComponent(file))
-        .then(renderSongs)
+        .then(function(body) {
+          renderSongs(body);
+          return refreshDownloadStatus();
+        })
         .catch(function(err) {
           setError(err.message);
         });
@@ -999,11 +1213,11 @@ function queueUiHtml(version) {
     }
 
     function createList() {
-      var input = window.prompt('New list filename (must end with .txt):', 'queue.txt');
+      var input = window.prompt('New list name (e.g. folk rock):', 'queue');
       if (input == null) return;
       var file = input.trim();
       if (!file) {
-        setError('List filename is required');
+        setError('List name is required');
         return;
       }
       if (!/\\.txt$/i.test(file)) file += '.txt';
@@ -1032,13 +1246,12 @@ function queueUiHtml(version) {
       var formData = new FormData(addSongForm);
       var payload = {
         file: state.selectedFile,
-        genre: String(formData.get('genre') || '').trim(),
         artist: String(formData.get('artist') || '').trim(),
         title: String(formData.get('title') || '').trim(),
         path: String(formData.get('path') || '').trim(),
       };
-      if (!payload.genre || !payload.artist || !payload.path) {
-        setError('Genre, artist, and URL are required');
+      if (!payload.artist || !payload.path) {
+        setError('Artist and URL are required');
         return;
       }
       setError('');
@@ -1053,7 +1266,7 @@ function queueUiHtml(version) {
           closeAddSongModal();
           return refreshLists().then(function() {
             return loadList(state.selectedFile);
-          });
+          }).then(refreshDownloadStatus);
         })
         .catch(function(err) {
           setError(err.message);
@@ -1086,6 +1299,41 @@ function queueUiHtml(version) {
           closePasteLinesModal();
           return refreshLists().then(function() {
             return loadList(state.selectedFile);
+          }).then(refreshDownloadStatus);
+        })
+        .catch(function(err) {
+          setError(err.message);
+        })
+        .finally(function() {
+          submitBtn.disabled = false;
+        });
+    }
+
+    function submitRenameList(event) {
+      event.preventDefault();
+      if (!state.selectedFile) {
+        setError('Choose a list before renaming');
+        return;
+      }
+      var newFile = String(new FormData(renameListForm).get('newFile') || '').trim();
+      if (!newFile) {
+        setError('List name is required');
+        return;
+      }
+      if (!/\\.txt$/i.test(newFile)) newFile += '.txt';
+      setError('');
+      var submitBtn = renameListForm.querySelector('button[type="submit"]');
+      submitBtn.disabled = true;
+      return requestJson('/api/list/rename', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({file: state.selectedFile, newFile: newFile}),
+      })
+        .then(function(body) {
+          closeRenameListModal();
+          state.selectedFile = body.file;
+          return refreshLists().then(function() {
+            return loadList(body.file);
           });
         })
         .catch(function(err) {
@@ -1100,6 +1348,7 @@ function queueUiHtml(version) {
     document.getElementById('new-list').addEventListener('click', createList);
     addSongBtn.addEventListener('click', openAddSongModal);
     pasteLinesBtn.addEventListener('click', openPasteLinesModal);
+    renameListBtn.addEventListener('click', openRenameListModal);
     document.getElementById('add-song-close').addEventListener('click', closeAddSongModal);
     document.getElementById('add-song-cancel').addEventListener('click', closeAddSongModal);
     addSongModal.addEventListener('click', function(event) {
@@ -1112,6 +1361,12 @@ function queueUiHtml(version) {
       if (event.target === pasteLinesModal) closePasteLinesModal();
     });
     pasteLinesForm.addEventListener('submit', submitPasteLines);
+    document.getElementById('rename-list-close').addEventListener('click', closeRenameListModal);
+    document.getElementById('rename-list-cancel').addEventListener('click', closeRenameListModal);
+    renameListModal.addEventListener('click', function(event) {
+      if (event.target === renameListModal) closeRenameListModal();
+    });
+    renameListForm.addEventListener('submit', submitRenameList);
     refreshLists();
   </script>
 </body>
@@ -1145,24 +1400,30 @@ export default class QueueServer {
 
       console.log(`[airfreyr serve] download: ${cmd} ${args.join(' ')}`);
 
-      let stderr = '';
+      let output = '';
       const child = spawn(cmd, args, {
         cwd: useNpx ? this.#opts.queueDir : path.dirname(CLI_PATH),
         stdio: ['ignore', 'pipe', 'pipe'],
         env: process.env,
       });
-      child.stdout?.on('data', chunk => process.stdout.write(chunk));
+      const collectOutput = chunk => {
+        process.stdout.write(chunk);
+        output += chunk.toString();
+        if (output.length > 16000) output = output.slice(-16000);
+      };
+      child.stdout?.on('data', collectOutput);
       child.stderr?.on('data', chunk => {
         process.stderr.write(chunk);
-        stderr += chunk.toString();
-        if (stderr.length > 16000) stderr = stderr.slice(-16000);
+        output += chunk.toString();
+        if (output.length > 16000) output = output.slice(-16000);
       });
       child.on('error', reject);
       child.on('close', code => {
         this.#scheduler.setExitCode(filePath, code);
+        const detail = tailLines(output, 8);
+        this.#scheduler.setLastLog(filePath, detail || null);
         if (code === 0) resolve();
         else {
-          const detail = tailLines(stderr);
           reject(
             new Error(
               detail
@@ -1234,6 +1495,22 @@ export default class QueueServer {
           apiJson({
             ok: true,
             ...(await createQueueFile(this.#opts.queueDir, req.body.file)),
+          }),
+        );
+      } catch (err) {
+        apiError(res, err);
+      }
+    });
+
+    app.post('/api/list/rename', async (req, res) => {
+      try {
+        const {file, newFile} = req.body || {};
+        if (!file) throw new Error('`file` is required');
+        if (!newFile) throw new Error('`newFile` is required');
+        res.json(
+          apiJson({
+            ok: true,
+            ...(await renameQueueFile(this.#opts.queueDir, file, newFile)),
           }),
         );
       } catch (err) {

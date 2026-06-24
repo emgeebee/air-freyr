@@ -433,7 +433,21 @@ function formatQueryLabel(entry) {
   return url;
 }
 
-function parseBatchCsvLine(line) {
+function titleCaseGenreStem(stem) {
+  return stem
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function genreFromQueueFilename(inputPath) {
+  const stem = xpath.basename(String(inputPath).trim()).replace(/\.txt$/i, "");
+  if (!stem) return null;
+  return titleCaseGenreStem(stem);
+}
+
+function parseBatchCsvLine(line, fileGenre) {
   const parts = parseCsvLine(line);
   const urlIndex = parts.findIndex((part) => /^https?:\/\//i.test(part));
   if (urlIndex < 0) {
@@ -442,10 +456,31 @@ function parseBatchCsvLine(line) {
   }
   const url = parts.slice(urlIndex).join(",").trim();
   const fields = parts.slice(0, urlIndex);
+  let genre;
+  let artist;
+  let title;
+  if (fileGenre) {
+    genre = fileGenre;
+    if (fields.length >= 3) {
+      artist = fields[1];
+      title = fields.slice(2).join(",");
+    } else if (fields.length === 2) {
+      artist = fields[0];
+      title = fields[1];
+    } else if (fields.length === 1) {
+      artist = fields[0];
+      title = "";
+    } else throw new Error(`Invalid CSV line (missing artist): ${line}`);
+  } else {
+    genre = fields[0];
+    artist = fields[1];
+    title = fields.length > 2 ? fields.slice(2).join(",") : "";
+  }
+  if (!artist) throw new Error(`Invalid CSV line (missing artist): ${line}`);
   return {
-    genre: fields[0],
-    artist: fields[1],
-    title: fields[2],
+    genre: genre || fileGenre,
+    artist,
+    title: title || "",
     url,
   };
 }
@@ -627,17 +662,19 @@ function printBatchIssues(logger, queryIssues, trackIssues) {
   logger.error("\x1b[31m========================================\x1b[0m");
 }
 
-function PARSE_INPUT_LINES(lines) {
+function PARSE_INPUT_LINES(lines, fileGenre) {
   return lines
     .map((line) => line.toString().trim())
     .filter((line) => !!line && /^(?!\s*#)/.test(line))
     .map((line) => line.replace(/#.*$/, "").trim())
     .filter(Boolean)
-    .map((line) => parseBatchCsvLine(line));
+    .map((line) => parseBatchCsvLine(line, fileGenre));
 }
 
 async function PROCESS_INPUT_ARG(input_arg) {
   if (!input_arg) return [];
+  const fileGenre =
+    input_arg !== "-" ? genreFromQueueFilename(input_arg) : null;
   const inputSource =
     input_arg === "-"
       ? process.stdin
@@ -656,7 +693,7 @@ async function PROCESS_INPUT_ARG(input_arg) {
       if (er.code === 2)
         throw new Error(`Input stream read timed out after 15 seconds`);
     });
-  return PARSE_INPUT_LINES(lines);
+  return PARSE_INPUT_LINES(lines, fileGenre);
 }
 
 function PROCESS_IMAGE_SIZE(value) {
