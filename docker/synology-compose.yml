@@ -7,8 +7,12 @@
 #   /volume1/docker/airfreyr/queues/
 #   /volume1/docker/airfreyr/music/
 #   /volume1/docker/airfreyr/config/conf.json
-#   /volume1/Music/cds-alac/   (optional mirror library)
-#   /volume1/Music/cds-mp3/    (optional mirror library)
+#   /volume1/Music/cds-alac/   (optional mirror library — must be writable)
+#   /volume1/Music/cds-mp3/    (optional mirror library — must be writable)
+#
+# Mirror folders need write permission for the container. If copies fail with
+# EACCES, set PUID/PGID below to your DSM user's UID/GID and ensure those
+# shared folders grant that user Read/Write.
 #
 # No image build. No extra scripts to copy. Uses node:20-alpine only.
 
@@ -23,6 +27,10 @@ services:
     environment:
       AIRFREYR_REFRESH_HOURS: "3"
       AIRFREYR_MIRROR_DIRS: "/data/cds-alac,/data/cds-mp3"
+      # Match Synology shared-folder owner (Control Panel → User → admin → UID/GID).
+      # Used to chown mirrored files when the container runs as root.
+      PUID: "1024"
+      PGID: "100"
     volumes:
       - /volume1/docker/airfreyr/queues:/data/queues
       - /volume1/docker/airfreyr/music:/data/music

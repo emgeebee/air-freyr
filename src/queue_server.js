@@ -48,6 +48,35 @@ export async function loadProjectConfig(configPath = DEFAULT_CONF_PATH) {
   return JSON.parse(await readFile(configPath, 'utf8'));
 }
 
+export function collectMirrorRoots(projectConfig = {}, outputDir = null) {
+  const dirs = projectConfig.dirs || {};
+  return Array.from(
+    new Set(
+      [
+        ...(dirs.mirror || []),
+        ...(process.env.AIRFREYR_MIRROR_DIRS || '')
+          .split(',')
+          .map(dir => dir.trim())
+          .filter(Boolean),
+        ...(dirs.mirrorToOutput && outputDir ? [outputDir] : []),
+      ].map(dir => path.resolve(dir)),
+    ),
+  );
+}
+
+async function assertWritableDir(dir, label) {
+  try {
+    await mkdir(dir, {recursive: true});
+    await access(dir, fsConstants.R_OK | fsConstants.W_OK);
+  } catch (err) {
+    const denied = err?.code === 'EACCES' || err?.code === 'EPERM';
+    const suffix = denied
+      ? ' — grant write access to the user running airfreyr (on Synology, set PUID/PGID to the shared-folder owner)'
+      : '';
+    throw new Error(`${label} not writable: ${dir}${suffix}`);
+  }
+}
+
 export function resolveServeConfig(opts = {}, projectConfig = {}) {
   const serve = projectConfig.serve || {};
   const dirs = projectConfig.dirs || {};
@@ -1498,6 +1527,10 @@ export default class QueueServer {
       throw new Error('port must be a valid TCP port');
 
     if (this.#opts.config) await assertReadable(this.#opts.config, 'config file');
+    let projectConfig = {};
+    if (this.#opts.config) {
+      projectConfig = await loadProjectConfig(this.#opts.config);
+    }
     if (this.#opts.outputDir) {
       try {
         await mkdir(this.#opts.outputDir, {recursive: true});
@@ -1505,6 +1538,11 @@ export default class QueueServer {
       } catch {
         throw new Error(`output directory not writable: ${this.#opts.outputDir}`);
       }
+    }
+
+    const mirrorRoots = collectMirrorRoots(projectConfig, this.#opts.outputDir);
+    for (const mirrorRoot of mirrorRoots) {
+      await assertWritableDir(mirrorRoot, 'mirror directory');
     }
 
     try {
@@ -1674,6 +1712,8 @@ export default class QueueServer {
     console.log(`[airfreyr serve] queue directory: ${path.resolve(this.#opts.queueDir)}`);
     if (this.#opts.outputDir)
       console.log(`[airfreyr serve] output directory: ${path.resolve(this.#opts.outputDir)}`);
+    if (mirrorRoots.length)
+      console.log(`[airfreyr serve] mirror directories: ${mirrorRoots.join(', ')}`);
     console.log(`[airfreyr serve] POST ${this.baseUrl}/add`);
     return this;
   }

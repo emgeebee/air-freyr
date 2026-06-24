@@ -509,6 +509,63 @@ function resolveCompilationMirrorPaths(batchMeta, track, format) {
   return { trackPath, outFileName, trackBaseName };
 }
 
+function collectMirrorRoots(config, baseDirectory) {
+  return Array.from(
+    new Set(
+      [
+        ...(config?.dirs?.mirror || []),
+        ...(process.env.AIRFREYR_MIRROR_DIRS || "")
+          .split(",")
+          .map((dir) => dir.trim())
+          .filter(Boolean),
+        ...(config?.dirs?.mirrorToOutput ? [baseDirectory] : []),
+      ].map((dirPath) =>
+        xpath.isAbsolute(dirPath)
+          ? dirPath
+          : xpath.relative(".", dirPath || ".") || ".",
+      ),
+    ),
+  );
+}
+
+function mirrorOwnerIds() {
+  const uid = process.env.AIRFREYR_MIRROR_UID || process.env.PUID;
+  const gid = process.env.AIRFREYR_MIRROR_GID || process.env.PGID;
+  if (!uid || !gid) return null;
+  const parsedUid = Number.parseInt(uid, 10);
+  const parsedGid = Number.parseInt(gid, 10);
+  if (!Number.isInteger(parsedUid) || !Number.isInteger(parsedGid)) return null;
+  return { uid: parsedUid, gid: parsedGid };
+}
+
+async function assertDirWritable(dir, label) {
+  try {
+    await mkdirp(dir);
+    await fs.access(dir, fs_constants.W_OK);
+  } catch (err) {
+    const denied = err?.code === "EACCES" || err?.code === "EPERM";
+    const suffix = denied
+      ? " — grant write access to the user running airfreyr (on Synology, set PUID/PGID to the shared-folder owner)"
+      : "";
+    throw new Error(
+      `${label} not writable [${dir}]${suffix}: ${err?.message || err}`,
+    );
+  }
+}
+
+async function finalizeMirroredFile(filePath, dirPath) {
+  await fs.chmod(filePath, 0o664).catch(() => {});
+  await fs.chmod(dirPath, 0o775).catch(() => {});
+  const owner = mirrorOwnerIds();
+  if (!owner) return;
+  try {
+    await fs.chown(filePath, owner.uid, owner.gid);
+    await fs.chown(dirPath, owner.uid, owner.gid);
+  } catch {
+    // chown requires root; ignore when unavailable
+  }
+}
+
 async function mirrorDownloadedTrack(sourcePath, mirrorRoots, batchMeta, track, format) {
   const paths = resolveCompilationMirrorPaths(batchMeta, track, format);
   if (!paths) return [];
@@ -516,12 +573,22 @@ async function mirrorDownloadedTrack(sourcePath, mirrorRoots, batchMeta, track, 
   const source = xpath.resolve(sourcePath);
   for (const root of mirrorRoots) {
     const destDir = xpath.join(root, paths.trackPath);
-    await mkdirp(root);
-    await mkdirp(destDir);
+    await assertDirWritable(destDir, "Mirror directory");
     const dest = xpath.join(destDir, paths.outFileName);
     if (xpath.resolve(dest) === source) continue;
-    await fs.copyFile(sourcePath, dest);
-    copied.push(dest);
+    try {
+      await fs.copyFile(sourcePath, dest);
+      await finalizeMirroredFile(dest, destDir);
+      copied.push(dest);
+    } catch (err) {
+      if (err?.code === "EACCES" || err?.code === "EPERM") {
+        throw new Error(
+          `Mirror copy failed (permission denied): ${dest}. Ensure [${root}] is writable by the container process.`,
+          { cause: err },
+        );
+      }
+      throw err;
+    }
   }
   return copied;
 }
@@ -600,9 +667,11 @@ function getTrackFailureReason(code) {
                   ? "Error while encoding audio"
                   : code === 8
                     ? "Failed while embedding metadata"
-                    : code === 9
-                      ? "Unexpected postprocessing error"
-                      : "Unexpected track processing error";
+                : code === 9
+                  ? "Unexpected postprocessing error"
+                  : code === 11
+                    ? "Mirror copy failed"
+                    : "Unexpected track processing error";
 }
 
 function formatErrDetail(err) {
@@ -1274,29 +1343,13 @@ async function init(packageJson, queries, options) {
   if (!CHECK_DIRECTORIES.includes(BASE_DIRECTORY))
     CHECK_DIRECTORIES.unshift(BASE_DIRECTORY);
 
-  const MIRROR_ROOTS = Array.from(
-    new Set(
-      [
-        ...(Config.dirs.mirror || []),
-        ...(process.env.AIRFREYR_MIRROR_DIRS || "")
-          .split(",")
-          .map((dir) => dir.trim())
-          .filter(Boolean),
-        ...(Config.dirs.mirrorToOutput ? [BASE_DIRECTORY] : []),
-      ].map((path) =>
-        xpath.isAbsolute(path) ? path : xpath.relative(".", path || ".") || ".",
-      ),
-    ),
-  );
+  const MIRROR_ROOTS = collectMirrorRoots(Config, BASE_DIRECTORY);
 
   for (const mirrorRoot of MIRROR_ROOTS) {
     try {
-      await mkdirp(mirrorRoot);
+      await assertDirWritable(mirrorRoot, "Mirror directory");
     } catch (err) {
-      stackLogger.error(
-        `\x1b[31m[!]\x1b[0m Failed to create mirror directory [${mirrorRoot}]`,
-      );
-      stackLogger.error(err["message"] || err);
+      stackLogger.error(`\x1b[31m[!]\x1b[0m ${err.message}`);
       process.exit(5);
     }
   }
@@ -1991,7 +2044,7 @@ async function init(packageJson, queries, options) {
               meta.batchMeta,
               track,
               options.format,
-            )
+            ).catch((err) => Promise.reject({ err, [symbols.errorCode]: 11 }))
           : [];
       return {
         wroteImage,
@@ -3239,7 +3292,7 @@ function prepCli(packageJson) {
       const { default: QueueServer, loadProjectConfig } = await import(
         "./src/queue_server.js"
       );
-      const projectConfig = await loadProjectConfig();
+      const projectConfig = await loadProjectConfig(args.config);
       const server = new QueueServer({
         hostname: args.hostname,
         port: args.port ? parseInt(args.port, 10) : undefined,
