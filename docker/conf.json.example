@@ -7,6 +7,8 @@
   "dirs": {
     "output": "/data/music",
     "check": [],
+    "mirror": ["/data/cds-alac", "/data/cds-mp3"],
+    "mirrorToOutput": true,
     "cache": {
       "path": "<cache>",
       "keep": true

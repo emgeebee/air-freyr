@@ -7,6 +7,8 @@
 #   /volume1/docker/airfreyr/queues/
 #   /volume1/docker/airfreyr/music/
 #   /volume1/docker/airfreyr/config/conf.json
+#   /volume1/Music/cds-alac/   (optional mirror library)
+#   /volume1/Music/cds-mp3/    (optional mirror library)
 #
 # No image build. No extra scripts to copy. Uses node:20-alpine only.
 
@@ -20,10 +22,13 @@ services:
       - "3797:3797"
     environment:
       AIRFREYR_REFRESH_HOURS: "3"
+      AIRFREYR_MIRROR_DIRS: "/data/cds-alac,/data/cds-mp3"
     volumes:
       - /volume1/docker/airfreyr/queues:/data/queues
       - /volume1/docker/airfreyr/music:/data/music
       - /volume1/docker/airfreyr/config:/data/config
+      - /volume1/Music/cds-alac:/data/cds-alac
+      - /volume1/Music/cds-mp3:/data/cds-mp3
     command:
       - /bin/sh
       - -c

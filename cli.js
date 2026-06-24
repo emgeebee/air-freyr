@@ -463,6 +463,35 @@ function resolveBatchSingleTrackPaths(batchMeta, track, format) {
   return { trackPath, outFileName, trackBaseName };
 }
 
+function resolveCompilationMirrorPaths(batchMeta, track, format) {
+  if (!batchMeta?.genre || !batchMeta?.artist) return null;
+  const title = batchMeta.title || track?.name;
+  if (!title) return null;
+  const trackBaseName = `${batchMeta.artist} - ${title}`;
+  const outFileName = `${filenamify(trackBaseName, { replacement: "_" })}.${format}`;
+  const trackPath = xpath.join(
+    filenamify(batchMeta.genre, { replacement: "_" }),
+    filenamify("Compilations", { replacement: "_" }),
+    filenamify("YouTube", { replacement: "_" }),
+  );
+  return { trackPath, outFileName, trackBaseName };
+}
+
+async function mirrorDownloadedTrack(sourcePath, mirrorRoots, batchMeta, track, format) {
+  const paths = resolveCompilationMirrorPaths(batchMeta, track, format);
+  if (!paths) return [];
+  const copied = [];
+  const source = xpath.resolve(sourcePath);
+  for (const root of mirrorRoots) {
+    const dest = xpath.join(root, paths.trackPath, paths.outFileName);
+    if (xpath.resolve(dest) === source) continue;
+    await mkdirp(xpath.dirname(dest));
+    await fs.copyFile(sourcePath, dest);
+    copied.push(dest);
+  }
+  return copied;
+}
+
 async function findExistingTrackFiles(
   baseDir,
   checkDirs,
@@ -904,6 +933,11 @@ async function init(packageJson, queries, options) {
               type: "array",
               items: { type: "string" },
             },
+            mirror: {
+              type: "array",
+              items: { type: "string" },
+            },
+            mirrorToOutput: { type: "boolean" },
             cache: {
               type: "object",
               properties: {
@@ -1057,7 +1091,7 @@ async function init(packageJson, queries, options) {
   }
 
   Config = _mergeWith(...configStack, (a, b, k) =>
-    ["sources", "check"].includes(k) && [a, b].every(Array.isArray)
+    ["sources", "check", "mirror"].includes(k) && [a, b].every(Array.isArray)
       ? Array.from(new Set(b.concat(a)))
       : undefined,
   );
@@ -1152,6 +1186,21 @@ async function init(packageJson, queries, options) {
 
   if (!CHECK_DIRECTORIES.includes(BASE_DIRECTORY))
     CHECK_DIRECTORIES.unshift(BASE_DIRECTORY);
+
+  const MIRROR_ROOTS = Array.from(
+    new Set(
+      [
+        ...(Config.dirs.mirror || []),
+        ...(process.env.AIRFREYR_MIRROR_DIRS || "")
+          .split(",")
+          .map((dir) => dir.trim())
+          .filter(Boolean),
+        ...(Config.dirs.mirrorToOutput ? [BASE_DIRECTORY] : []),
+      ].map((path) =>
+        xpath.isAbsolute(path) ? path : xpath.relative(".", path || ".") || ".",
+      ),
+    ),
+  );
 
   Config.dirs.cache.path =
     Config.dirs.cache.path === "<tmp>"
@@ -1835,7 +1884,21 @@ async function init(packageJson, queries, options) {
           throw err;
         }
       });
-      return { wroteImage, finalSize: (await fs.stat(meta.outFile.path)).size };
+      const mirroredPaths =
+        meta.batchMeta && MIRROR_ROOTS.length
+          ? await mirrorDownloadedTrack(
+              meta.outFile.path,
+              MIRROR_ROOTS,
+              meta.batchMeta,
+              track,
+              options.format,
+            )
+          : [];
+      return {
+        wroteImage,
+        finalSize: (await fs.stat(meta.outFile.path)).size,
+        mirroredPaths,
+      };
     },
   );
 
@@ -2200,6 +2263,7 @@ async function init(packageJson, queries, options) {
         track,
         service,
         skipCover: useBatchLayout,
+        batchMeta: useBatchLayout ? batchMeta : null,
       };
       return trackQueue
         .push({
@@ -2620,6 +2684,10 @@ async function init(packageJson, queries, options) {
             else
               embedLogger.log(
                 `\u2022 [\u2713] ${trackStat.meta.trackName} → ${xpath.resolve(trackStat.meta.outFile.path)}${
+                  trackStat.postprocess.mirroredPaths?.length
+                    ? `\n    mirrored: ${trackStat.postprocess.mirroredPaths.map((p) => xpath.resolve(p)).join(", ")}`
+                    : ""
+                }${
                   !!options.cover && !trackStat.postprocess.wroteImage
                     ? " [(i) unable to write cover art]"
                     : ""
