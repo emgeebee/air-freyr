@@ -5,7 +5,7 @@ import {tmpdir} from 'os';
 import path from 'path';
 import {mkdtemp, readFile, rm, writeFile} from 'fs/promises';
 
-import QueueServer from '../src/queue_server.js';
+import QueueServer, {fixDuplicateFilenameCsvField} from '../src/queue_server.js';
 
 async function freePort() {
   return new Promise((resolve, reject) => {
@@ -57,6 +57,58 @@ function request(port, method, requestPath, body) {
 }
 
 async function main() {
+  assert.deepEqual(
+    fixDuplicateFilenameCsvField(
+      'pop,Dance,Foster the People,https://example.com/track # pumped up kicks',
+      'pop',
+    ),
+    {
+      line: 'Dance,Foster the People,https://example.com/track # pumped up kicks',
+      changed: true,
+    },
+  );
+  assert.deepEqual(
+    fixDuplicateFilenameCsvField(
+      "Dance,The Weekend,Can't Feel My Face,https://example.com/track",
+      'pop',
+    ),
+    {
+      line: "Dance,The Weekend,Can't Feel My Face,https://example.com/track",
+      changed: false,
+    },
+  );
+  assert.deepEqual(
+    fixDuplicateFilenameCsvField('# pop,Dance,Foster the People,https://example.com/track', 'pop'),
+    {
+      line: '# Dance,Foster the People,https://example.com/track',
+      changed: true,
+    },
+  );
+
+  const sanitizeDir = await mkdtemp(path.join(tmpdir(), 'airfreyr-sanitize-test-'));
+  const sanitizedFile = path.join(sanitizeDir, 'pop.txt');
+  try {
+    await writeFile(
+      sanitizedFile,
+      'pop,Dance,Foster the People,https://example.com/track\n',
+      'utf8',
+    );
+    const sanitizeServer = new QueueServer({
+      hostname: '127.0.0.1',
+      port: await freePort(),
+      queueDir: sanitizeDir,
+      projectConfig: {},
+    });
+    await sanitizeServer.start();
+    assert.equal(
+      await readFile(sanitizedFile, 'utf8'),
+      'Dance,Foster the People,https://example.com/track\n',
+    );
+    await sanitizeServer.stop();
+  } finally {
+    await rm(sanitizeDir, {recursive: true, force: true});
+  }
+
   const queueDir = await mkdtemp(path.join(tmpdir(), 'airfreyr-queue-test-'));
   const queueFile = path.join(queueDir, 'kids.txt');
   let server;
@@ -82,6 +134,8 @@ async function main() {
     assert.equal(root.status, 200);
     assert.match(root.text, /AirFreyr Queues/);
     assert.match(root.text, /id="version"/);
+    assert.match(root.text, /id="add-song"/);
+    assert.match(root.text, /id="paste-lines"/);
 
     const lists = await request(port, 'GET', '/api/lists');
     assert.equal(lists.status, 200);
@@ -148,6 +202,30 @@ async function main() {
     const duplicate = await request(port, 'POST', '/api/list', {file: 'new-list.txt'});
     assert.equal(duplicate.status, 400);
     assert.equal(duplicate.json.ok, false);
+
+    const bulk = await request(port, 'POST', '/api/list/lines', {
+      file: 'kids.txt',
+      lines: [
+        'Dance,LMFAO,,https://www.youtube.com/watch?v=wyx6JDQCslE',
+        '# Kids,Disabled,Old,https://example.com/disabled',
+        '',
+        'Kids,Moana,Welcome,https://example.com/welcome',
+      ].join('\n'),
+    });
+    assert.equal(bulk.status, 201);
+    assert.equal(bulk.json.ok, true);
+    assert.equal(bulk.json.added, 3);
+    const bulkFile = await readFile(queueFile, 'utf8');
+    assert.match(bulkFile, /Dance,LMFAO/);
+    assert.match(bulkFile, /^# Kids,Disabled,Old/m);
+    assert.match(bulkFile, /Kids,Moana,Welcome/);
+
+    const bulkInvalid = await request(port, 'POST', '/api/list/lines', {
+      file: 'kids.txt',
+      lines: 'Not,a,valid,line',
+    });
+    assert.equal(bulkInvalid.status, 400);
+    assert.equal(bulkInvalid.json.ok, false);
   } finally {
     if (server) await server.stop();
     await rm(queueDir, {recursive: true, force: true});

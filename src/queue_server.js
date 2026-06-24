@@ -138,6 +138,65 @@ function joinEditableLines(lines, newline, trailingNewline) {
   return `${lines.join(newline)}${trailingNewline ? newline : ''}`;
 }
 
+function splitQueueLineBody(rawLine) {
+  const disabled = /^\s*#/.test(rawLine);
+  const prefix = disabled ? rawLine.match(/^(\s*#\s?)/)[1] : '';
+  const body = rawLine.replace(/^\s*#\s?/, '');
+  const noteMatch = body.match(/(\s+#.*)$/);
+  const note = noteMatch ? noteMatch[1] : '';
+  const content = (noteMatch ? body.slice(0, noteMatch.index) : body).trim();
+  return {prefix, content, note};
+}
+
+export function fixDuplicateFilenameCsvField(rawLine, fileStem) {
+  if (!fileStem) return {line: rawLine, changed: false};
+  if (!rawLine.trim()) return {line: rawLine, changed: false};
+
+  const {prefix, content, note} = splitQueueLineBody(rawLine);
+  if (!content) return {line: rawLine, changed: false};
+
+  const parts = parseCsvLine(content);
+  const urlIndex = parts.findIndex(part => /^https?:\/\//i.test(part));
+  if (urlIndex < 0 || parts.length !== 4) return {line: rawLine, changed: false};
+  if (parts[0] !== fileStem) return {line: rawLine, changed: false};
+
+  const fixedContent = parts.slice(1).map(escapeCsvField).join(',');
+  const line = `${prefix}${fixedContent}${note}`;
+  return {line, changed: line !== rawLine};
+}
+
+async function sanitizeQueueFile(filePath, fileStem) {
+  const text = await readFile(filePath, 'utf8');
+  const {lines, newline, trailingNewline} = splitEditableLines(text);
+  let changed = false;
+  const fixedLines = lines.map(line => {
+    const result = fixDuplicateFilenameCsvField(line, fileStem);
+    if (result.changed) changed = true;
+    return result.line;
+  });
+  if (!changed) return false;
+  await writeFile(filePath, joinEditableLines(fixedLines, newline, trailingNewline), 'utf8');
+  return true;
+}
+
+async function sanitizeQueueDirectory(dataDir) {
+  let dirents;
+  try {
+    dirents = await readdir(dataDir, {withFileTypes: true});
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+
+  for (const dirent of dirents) {
+    if (!dirent.isFile() || !dirent.name.endsWith('.txt')) continue;
+    const filePath = resolveQueueFile(dataDir, dirent.name);
+    const fileStem = dirent.name.replace(/\.txt$/i, '');
+    if (await sanitizeQueueFile(filePath, fileStem))
+      console.log(`[airfreyr serve] removed duplicate filename field in ${dirent.name}`);
+  }
+}
+
 function parseQueueEntry(rawLine, index) {
   const raw = rawLine.trim();
   if (!raw) return null;
@@ -276,6 +335,49 @@ function normalizeAddPayload(body) {
   if (!url) throw new Error('`path` is required');
   if (!/^https?:\/\//i.test(url)) throw new Error('`path` must be an http(s) URL');
   return {file, genre, artist, title: title || '', path: url};
+}
+
+function parseBulkQueueLine(rawLine, lineNumber) {
+  const trimmed = rawLine.trim();
+  if (!trimmed) return null;
+  const disabled = /^\s*#/.test(rawLine);
+  const body = rawLine.replace(/^\s*#\s?/, '');
+  const content = body.replace(/#.*$/, '').trim();
+  if (!content) return null;
+  const parts = parseCsvLine(content);
+  const urlIndex = parts.findIndex(part => /^https?:\/\//i.test(part));
+  if (urlIndex < 0) throw new Error(`line ${lineNumber}: missing http(s) URL`);
+  const fields = parts.slice(0, urlIndex);
+  const url = parts.slice(urlIndex).join(',').trim();
+  const genre = fields[0];
+  const artist = fields[1];
+  if (!genre) throw new Error(`line ${lineNumber}: genre is required`);
+  if (!artist) throw new Error(`line ${lineNumber}: artist is required`);
+  const title = fields.length > 2 ? fields.slice(2).join(',') : '';
+  return {genre, artist, title, path: url, disabled};
+}
+
+function formatBulkQueueLine(item) {
+  const line = formatBatchCsvLine(item).trimEnd();
+  return item.disabled ? `# ${line}\n` : formatBatchCsvLine(item);
+}
+
+function parseBulkQueueText(text) {
+  const items = [];
+  for (const [index, rawLine] of text.split(/\r?\n/).entries()) {
+    const item = parseBulkQueueLine(rawLine, index + 1);
+    if (item) items.push(item);
+  }
+  if (!items.length) throw new Error('no valid queue lines found');
+  return items;
+}
+
+async function appendBulkQueueLines(dataDir, file, text) {
+  const filePath = resolveQueueFile(dataDir, file);
+  const items = parseBulkQueueText(text);
+  await mkdir(path.dirname(filePath), {recursive: true});
+  await appendFile(filePath, items.map(formatBulkQueueLine).join(''), 'utf8');
+  return {file, added: items.length, ...(await readQueueFile(dataDir, file))};
 }
 
 class FileDownloadScheduler {
@@ -495,6 +597,92 @@ function queueUiHtml(version) {
       background: rgba(255, 107, 107, 0.12);
       color: #ffd7d7;
     }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+      background: rgba(8, 12, 20, 0.72);
+      z-index: 20;
+    }
+    .modal-backdrop[hidden] { display: none; }
+    .modal {
+      width: min(480px, 100%);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: var(--panel);
+      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+      overflow: hidden;
+    }
+    .modal.wide { width: min(720px, 100%); }
+    .modal-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 18px 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .modal-head h2 {
+      margin: 0;
+      font-size: 1.05rem;
+    }
+    .modal-body {
+      display: grid;
+      gap: 14px;
+      padding: 20px;
+    }
+    .field {
+      display: grid;
+      gap: 6px;
+    }
+    .field label {
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .field input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: var(--panel-soft);
+      color: var(--text);
+      font: inherit;
+    }
+    .field input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .field textarea {
+      width: 100%;
+      min-height: 220px;
+      resize: vertical;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: var(--panel-soft);
+      color: var(--text);
+      font: inherit;
+      line-height: 1.45;
+    }
+    .field textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .hint {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.85rem;
+      line-height: 1.45;
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      padding: 0 20px 20px;
+    }
     @media (max-width: 760px) {
       header, .song { display: block; }
       .layout { grid-template-columns: 1fr; }
@@ -528,7 +716,11 @@ function queueUiHtml(version) {
       <section class="panel">
         <div class="panel-head">
           <h2 id="songs-title">Songs</h2>
-          <span id="songs-count" class="meta"></span>
+          <div class="panel-head-actions">
+            <span id="songs-count" class="meta"></span>
+            <button id="paste-lines" type="button" disabled>Paste lines</button>
+            <button id="add-song" type="button" class="primary" disabled>Add song</button>
+          </div>
         </div>
         <div id="songs" class="songs">
           <div class="empty">Choose a list to view its songs.</div>
@@ -536,6 +728,59 @@ function queueUiHtml(version) {
       </section>
     </section>
   </main>
+  <div id="add-song-modal" class="modal-backdrop" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="add-song-title">
+      <div class="modal-head">
+        <h2 id="add-song-title">Add song</h2>
+        <button id="add-song-close" type="button" aria-label="Close">Close</button>
+      </div>
+      <form id="add-song-form">
+        <div class="modal-body">
+          <div class="field">
+            <label for="add-genre">Genre</label>
+            <input id="add-genre" name="genre" type="text" required autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="add-artist">Artist</label>
+            <input id="add-artist" name="artist" type="text" required autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="add-title">Title <span class="meta">(optional)</span></label>
+            <input id="add-title" name="title" type="text" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="add-url">URL</label>
+            <input id="add-url" name="path" type="url" required placeholder="https://..." autocomplete="off">
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="add-song-cancel" type="button">Cancel</button>
+          <button type="submit" class="primary">Add &amp; download</button>
+        </div>
+      </form>
+    </div>
+  </div>
+  <div id="paste-lines-modal" class="modal-backdrop" hidden>
+    <div class="modal wide" role="dialog" aria-modal="true" aria-labelledby="paste-lines-title">
+      <div class="modal-head">
+        <h2 id="paste-lines-title">Paste lines</h2>
+        <button id="paste-lines-close" type="button" aria-label="Close">Close</button>
+      </div>
+      <form id="paste-lines-form">
+        <div class="modal-body">
+          <p class="hint">One song per line as CSV: <code>genre,artist,title,url</code>. Title is optional. Lines starting with <code>#</code> are saved as disabled entries. Blank lines and plain comments are skipped.</p>
+          <div class="field">
+            <label for="paste-lines-input">Queue lines</label>
+            <textarea id="paste-lines-input" name="lines" required placeholder="Kids,Moana,You're Welcome,https://www.youtube.com/watch?v=G8QjumNNNBY"></textarea>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="paste-lines-cancel" type="button">Cancel</button>
+          <button type="submit" class="primary">Add lines &amp; download</button>
+        </div>
+      </form>
+    </div>
+  </div>
   <script>
     var state = {lists: [], selectedFile: null};
     var listsEl = document.getElementById('lists');
@@ -545,9 +790,52 @@ function queueUiHtml(version) {
     var songsTitleEl = document.getElementById('songs-title');
     var songsCountEl = document.getElementById('songs-count');
     var versionEl = document.getElementById('version');
+    var addSongBtn = document.getElementById('add-song');
+    var pasteLinesBtn = document.getElementById('paste-lines');
+    var addSongModal = document.getElementById('add-song-modal');
+    var addSongForm = document.getElementById('add-song-form');
+    var pasteLinesModal = document.getElementById('paste-lines-modal');
+    var pasteLinesForm = document.getElementById('paste-lines-form');
 
     function text(value) {
       return value == null ? '' : String(value);
+    }
+
+    function setListActionsEnabled(enabled) {
+      addSongBtn.disabled = !enabled;
+      pasteLinesBtn.disabled = !enabled;
+    }
+
+    function openAddSongModal() {
+      if (!state.selectedFile) {
+        setError('Choose a list before adding a song');
+        return;
+      }
+      setError('');
+      document.getElementById('add-song-title').textContent = 'Add song to ' + state.selectedFile;
+      addSongModal.hidden = false;
+      document.getElementById('add-genre').focus();
+    }
+
+    function closeAddSongModal() {
+      addSongModal.hidden = true;
+      addSongForm.reset();
+    }
+
+    function openPasteLinesModal() {
+      if (!state.selectedFile) {
+        setError('Choose a list before pasting lines');
+        return;
+      }
+      setError('');
+      document.getElementById('paste-lines-title').textContent = 'Paste lines into ' + state.selectedFile;
+      pasteLinesModal.hidden = false;
+      document.getElementById('paste-lines-input').focus();
+    }
+
+    function closePasteLinesModal() {
+      pasteLinesModal.hidden = true;
+      pasteLinesForm.reset();
     }
 
     function setVersion(version) {
@@ -671,6 +959,7 @@ function queueUiHtml(version) {
           ) {
             state.selectedFile = null;
           }
+          setListActionsEnabled(!!state.selectedFile);
           renderLists();
           if (state.selectedFile) return loadList(state.selectedFile);
           return null;
@@ -683,6 +972,7 @@ function queueUiHtml(version) {
     function loadList(file) {
       setError('');
       state.selectedFile = file;
+      setListActionsEnabled(!!file);
       renderLists();
       songsEl.innerHTML = '<div class="empty">Loading...</div>';
       return requestJson('/api/list?file=' + encodeURIComponent(file))
@@ -733,8 +1023,95 @@ function queueUiHtml(version) {
         });
     }
 
+    function submitAddSong(event) {
+      event.preventDefault();
+      if (!state.selectedFile) {
+        setError('Choose a list before adding a song');
+        return;
+      }
+      var formData = new FormData(addSongForm);
+      var payload = {
+        file: state.selectedFile,
+        genre: String(formData.get('genre') || '').trim(),
+        artist: String(formData.get('artist') || '').trim(),
+        title: String(formData.get('title') || '').trim(),
+        path: String(formData.get('path') || '').trim(),
+      };
+      if (!payload.genre || !payload.artist || !payload.path) {
+        setError('Genre, artist, and URL are required');
+        return;
+      }
+      setError('');
+      var submitBtn = addSongForm.querySelector('button[type="submit"]');
+      submitBtn.disabled = true;
+      return requestJson('/add', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload),
+      })
+        .then(function() {
+          closeAddSongModal();
+          return refreshLists().then(function() {
+            return loadList(state.selectedFile);
+          });
+        })
+        .catch(function(err) {
+          setError(err.message);
+        })
+        .finally(function() {
+          submitBtn.disabled = false;
+        });
+    }
+
+    function submitPasteLines(event) {
+      event.preventDefault();
+      if (!state.selectedFile) {
+        setError('Choose a list before pasting lines');
+        return;
+      }
+      var lines = String(new FormData(pasteLinesForm).get('lines') || '').trim();
+      if (!lines) {
+        setError('Paste at least one queue line');
+        return;
+      }
+      setError('');
+      var submitBtn = pasteLinesForm.querySelector('button[type="submit"]');
+      submitBtn.disabled = true;
+      return requestJson('/api/list/lines', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({file: state.selectedFile, lines: lines}),
+      })
+        .then(function() {
+          closePasteLinesModal();
+          return refreshLists().then(function() {
+            return loadList(state.selectedFile);
+          });
+        })
+        .catch(function(err) {
+          setError(err.message);
+        })
+        .finally(function() {
+          submitBtn.disabled = false;
+        });
+    }
+
     document.getElementById('refresh').addEventListener('click', refreshLists);
     document.getElementById('new-list').addEventListener('click', createList);
+    addSongBtn.addEventListener('click', openAddSongModal);
+    pasteLinesBtn.addEventListener('click', openPasteLinesModal);
+    document.getElementById('add-song-close').addEventListener('click', closeAddSongModal);
+    document.getElementById('add-song-cancel').addEventListener('click', closeAddSongModal);
+    addSongModal.addEventListener('click', function(event) {
+      if (event.target === addSongModal) closeAddSongModal();
+    });
+    addSongForm.addEventListener('submit', submitAddSong);
+    document.getElementById('paste-lines-close').addEventListener('click', closePasteLinesModal);
+    document.getElementById('paste-lines-cancel').addEventListener('click', closePasteLinesModal);
+    pasteLinesModal.addEventListener('click', function(event) {
+      if (event.target === pasteLinesModal) closePasteLinesModal();
+    });
+    pasteLinesForm.addEventListener('submit', submitPasteLines);
     refreshLists();
   </script>
 </body>
@@ -817,7 +1194,9 @@ export default class QueueServer {
       }
     }
 
-    const app = express().use(cors()).use(express.json({limit: '64kb'}));
+    await sanitizeQueueDirectory(this.#opts.queueDir);
+
+    const app = express().use(cors()).use(express.json({limit: '256kb'}));
 
     app.get('/', (_req, res) => {
       res.type('html').send(queueUiHtml(VERSION));
@@ -855,6 +1234,26 @@ export default class QueueServer {
           apiJson({
             ok: true,
             ...(await createQueueFile(this.#opts.queueDir, req.body.file)),
+          }),
+        );
+      } catch (err) {
+        apiError(res, err);
+      }
+    });
+
+    app.post('/api/list/lines', async (req, res) => {
+      try {
+        const {file, lines} = req.body || {};
+        if (!file) throw new Error('`file` is required');
+        if (!lines || typeof lines !== 'string') throw new Error('`lines` is required');
+        const filePath = resolveQueueFile(this.#opts.queueDir, file);
+        const result = await appendBulkQueueLines(this.#opts.queueDir, file, lines);
+        this.#scheduler.schedule(filePath, fp => this.#spawnDownload(fp));
+        res.status(201).json(
+          apiJson({
+            ok: true,
+            ...result,
+            download: this.#scheduler.getStatus(filePath),
           }),
         );
       } catch (err) {
