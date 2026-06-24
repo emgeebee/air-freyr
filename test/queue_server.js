@@ -169,6 +169,14 @@ async function main() {
     assert.equal(traversal.status, 400);
     assert.equal(traversal.json.ok, false);
 
+    const retry = await request(port, 'POST', '/api/list/item/retry', {
+      file: 'kids.txt',
+      line: 1,
+    });
+    assert.equal(retry.status, 200);
+    assert.equal(retry.json.ok, true);
+    assert.equal(retry.json.line, 1);
+
     const disabled = await request(port, 'POST', '/api/list/item', {
       file: 'kids.txt',
       line: 1,
@@ -257,6 +265,13 @@ async function main() {
     });
     assert.equal(renameMissing.status, 400);
     assert.equal(renameMissing.json.ok, false);
+
+    const retryMissing = await request(port, 'POST', '/api/list/item/retry', {
+      file: 'folk rock.txt',
+      line: 999,
+    });
+    assert.equal(retryMissing.status, 400);
+    assert.equal(retryMissing.json.ok, false);
   } finally {
     if (server) await server.stop();
     await rm(queueDir, {recursive: true, force: true});

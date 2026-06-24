@@ -487,7 +487,7 @@ function parseBatchCsvLine(line, fileGenre) {
 
 function resolveBatchSingleTrackPaths(batchMeta, track, format) {
   if (!batchMeta?.genre || !batchMeta?.artist) return null;
-  const title = batchMeta.title || track?.name;
+  const title = batchMeta.title || track?.name || batchMeta.artist;
   if (!title) return null;
   const trackBaseName = `${batchMeta.artist} - ${title}`;
   const outFileName = `${filenamify(trackBaseName, { replacement: "_" })}.${format}`;
@@ -497,7 +497,7 @@ function resolveBatchSingleTrackPaths(batchMeta, track, format) {
 
 function resolveCompilationMirrorPaths(batchMeta, track, format) {
   if (!batchMeta?.genre || !batchMeta?.artist) return null;
-  const title = batchMeta.title || track?.name;
+  const title = batchMeta.title || track?.name || batchMeta.artist;
   if (!title) return null;
   const trackBaseName = `${batchMeta.artist} - ${title}`;
   const outFileName = `${filenamify(trackBaseName, { replacement: "_" })}.${format}`;
@@ -696,6 +696,28 @@ async function PROCESS_INPUT_ARG(input_arg) {
   return PARSE_INPUT_LINES(lines, fileGenre);
 }
 
+async function PROCESS_INPUT_LINE(input_arg, lineNumber) {
+  const filePath =
+    input_arg === "-"
+      ? null
+      : await PROCESS_INPUT_FILE(input_arg, "Input", false);
+  if (!filePath) throw new Error("--line requires a queue file input");
+  const line = Number.parseInt(lineNumber, 10);
+  if (!Number.isInteger(line) || line < 1)
+    throw new Error("`--line` must be a positive integer");
+  const text = await fs.readFile(filePath, "utf8");
+  const lines = text.split(/\r?\n/);
+  if (/\r?\n$/.test(text)) lines.pop();
+  const index = line - 1;
+  if (index >= lines.length) throw new Error(`line ${line} does not exist`);
+  const rawLine = lines[index];
+  if (!rawLine.trim()) throw new Error(`line ${line} is empty`);
+  if (/^\s*#/.test(rawLine)) throw new Error(`line ${line} is disabled`);
+  const fileGenre = genreFromQueueFilename(filePath);
+  const content = rawLine.replace(/^\s*#\s?/, "").replace(/#.*$/, "").trim();
+  return [parseBatchCsvLine(content, fileGenre)];
+}
+
 function PROCESS_IMAGE_SIZE(value) {
   if (!["string", "number"].includes(typeof value))
     value = `${value.width}x${value.height}`;
@@ -859,7 +881,12 @@ async function init(packageJson, queries, options) {
     options.timeout = CHECK_FLAG_IS_NUM(options.timeout, "--timeout", "number");
     options.bitrate = CHECK_BIT_RATE_VAL(options.bitrate);
     options.format = CHECK_FORMAT_VAL(options.format);
-    options.input = await PROCESS_INPUT_ARG(options.input);
+    if (options.input) {
+      options.input =
+        options.line != null
+          ? await PROCESS_INPUT_LINE(options.input, options.line)
+          : await PROCESS_INPUT_ARG(options.input);
+    }
     if (options.config)
       options.config = await PROCESS_INPUT_FILE(
         options.config,
@@ -2583,28 +2610,68 @@ async function init(packageJson, queries, options) {
         contentType === "track" &&
         batchMeta?.genre &&
         batchMeta?.artist &&
-        batchMeta?.title &&
         !options.force
       ) {
         const batchPaths = resolveBatchSingleTrackPaths(
           batchMeta,
-          { name: batchMeta.title },
+          { name: batchMeta.title || batchMeta.artist },
           options.format,
         );
-        const fileExistsIn = await findExistingTrackFiles(
-          BASE_DIRECTORY,
-          CHECK_DIRECTORIES,
-          batchPaths.trackPath,
-          batchPaths.outFileName,
-        );
-        if (fileExistsIn.length) {
-          queryLogger.log(
-            `\x1b[33m[\u00bb] Already exists — skipping download\x1b[0m`,
+        if (batchPaths) {
+          const fileExistsIn = await findExistingTrackFiles(
+            BASE_DIRECTORY,
+            CHECK_DIRECTORIES,
+            batchPaths.trackPath,
+            batchPaths.outFileName,
           );
-          queryLogger.log(
-            `\x1b[33m    \u2192 ${xpath.resolve(fileExistsIn[0])}\x1b[0m`,
-          );
-          return [buildExistsSkipStat(batchPaths, BASE_DIRECTORY, fileExistsIn)];
+          if (fileExistsIn.length) {
+            const primaryPath = xpath.join(
+              BASE_DIRECTORY,
+              batchPaths.trackPath,
+              batchPaths.outFileName,
+            );
+            if (options.remirror) {
+              const sourcePath =
+                fileExistsIn.find(
+                  (path) => xpath.resolve(path) === xpath.resolve(primaryPath),
+                ) || fileExistsIn[0];
+              const mirroredPaths = await mirrorDownloadedTrack(
+                sourcePath,
+                MIRROR_ROOTS,
+                batchMeta,
+                { name: batchMeta.title || batchMeta.artist },
+                options.format,
+              );
+              queryLogger.log(
+                `\x1b[33m[\u00bb] Already exists — re-mirroring copies\x1b[0m`,
+              );
+              queryLogger.log(
+                `\x1b[33m    \u2192 ${xpath.resolve(sourcePath)}\x1b[0m`,
+              );
+              if (mirroredPaths.length)
+                queryLogger.log(
+                  `\x1b[33m    mirrored: ${mirroredPaths.map((path) => xpath.resolve(path)).join(", ")}\x1b[0m`,
+                );
+              return [
+                {
+                  meta: {
+                    trackName: batchPaths.trackBaseName,
+                    outFile: { path: primaryPath },
+                  },
+                  [symbols.errorCode]: 0,
+                  skip_reason: "remirrored",
+                  postprocess: { mirroredPaths },
+                },
+              ];
+            }
+            queryLogger.log(
+              `\x1b[33m[\u00bb] Already exists — skipping download\x1b[0m`,
+            );
+            queryLogger.log(
+              `\x1b[33m    \u2192 ${xpath.resolve(fileExistsIn[0])}\x1b[0m`,
+            );
+            return [buildExistsSkipStat(batchPaths, BASE_DIRECTORY, fileExistsIn)];
+          }
         }
       }
       const isAuthenticated = !!(await processPromise(
@@ -2707,9 +2774,15 @@ async function init(packageJson, queries, options) {
               const skipNote =
                 trackStat.skip_reason === "exists"
                   ? "\x1b[33malready exists\x1b[0m"
+                  : trackStat.skip_reason === "remirrored"
+                    ? "\x1b[33mre-mirrored\x1b[0m"
                   : `skipped: ${trackStat.skip_reason}`;
               embedLogger.log(
-                `\u2022 [\u00bb] ${trackStat.meta.trackName} (${skipNote}) → ${xpath.resolve(trackStat.meta.outFile.path)}`,
+                `\u2022 [\u00bb] ${trackStat.meta.trackName} (${skipNote}) → ${xpath.resolve(trackStat.meta.outFile.path)}${
+                  trackStat.postprocess?.mirroredPaths?.length
+                    ? `\n    mirrored: ${trackStat.postprocess.mirroredPaths.map((p) => xpath.resolve(p)).join(", ")}`
+                    : ""
+                }`,
               );
             }
             else
@@ -2964,6 +3037,14 @@ function prepCli(packageJson) {
     )
     .option("--gapless", "set the gapless playback flag for all tracks")
     .option("-f, --force", "force overwrite of existing files")
+    .option(
+      "--line <N>",
+      "with -i, process only this 1-based line number from the queue file",
+    )
+    .option(
+      "--remirror",
+      "with -i, if the track already exists, copy it to mirror folders instead of skipping",
+    )
     .option("-o, --config <FILE>", "specify alternative configuration file")
     .option(
       "-p, --playlist <FILENAME>",

@@ -346,6 +346,16 @@ async function updateQueueFileItem(dataDir, file, line, action) {
   return readQueueFile(dataDir, file);
 }
 
+async function retryQueueFileItem(dataDir, file, line) {
+  const list = await readQueueFile(dataDir, file);
+  const lineNumber = Number.parseInt(line, 10);
+  if (!Number.isInteger(lineNumber) || lineNumber < 1) throw new Error('`line` must be a positive integer');
+  const entry = list.entries.find(item => item.line === lineNumber);
+  if (!entry) throw new Error('`line` does not exist in the selected file');
+  if (entry.disabled) throw new Error('`line` must reference an active song entry');
+  return {file, line: lineNumber, entry};
+}
+
 function titleCaseGenreStem(stem) {
   return stem
     .split(/[\s_-]+/)
@@ -1153,6 +1163,15 @@ function queueUiHtml(version) {
 
         var actions = row.querySelector('.actions');
         if (!entry.disabled) {
+          var retry = document.createElement('button');
+          retry.type = 'button';
+          retry.className = 'primary';
+          retry.textContent = 'Retry';
+          retry.addEventListener('click', function() {
+            retrySong(entry.line);
+          });
+          actions.appendChild(retry);
+
           var disable = document.createElement('button');
           disable.type = 'button';
           disable.textContent = 'Disable';
@@ -1223,6 +1242,21 @@ function queueUiHtml(version) {
         .then(function(body) {
           renderSongs(body);
           return refreshLists();
+        })
+        .catch(function(err) {
+          setError(err.message);
+        });
+    }
+
+    function retrySong(line) {
+      setError('');
+      return requestJson('/api/list/item/retry', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({file: state.selectedFile, line: line}),
+      })
+        .then(function() {
+          return refreshDownloadStatus();
         })
         .catch(function(err) {
           setError(err.message);
@@ -1403,9 +1437,9 @@ export default class QueueServer {
     return `http://${this.#opts.hostname}:${this.#opts.port}`;
   }
 
-  #spawnDownload(filePath) {
+  #spawnDownload(filePath, extraArgs = []) {
     return new Promise((resolve, reject) => {
-      const dlArgs = ['-i', filePath, '--no-logo', '--no-header', ...this.#opts.extraCliArgs];
+      const dlArgs = ['-i', filePath, '--no-logo', '--no-header', ...extraArgs, ...this.#opts.extraCliArgs];
       if (this.#opts.outputDir) dlArgs.push('-d', this.#opts.outputDir);
       if (this.#opts.config) dlArgs.push('-o', this.#opts.config);
 
@@ -1561,6 +1595,26 @@ export default class QueueServer {
           apiJson({
             ok: true,
             ...(await updateQueueFileItem(this.#opts.queueDir, req.body.file, req.body.line, req.body.action)),
+          }),
+        );
+      } catch (err) {
+        apiError(res, err);
+      }
+    });
+
+    app.post('/api/list/item/retry', async (req, res) => {
+      try {
+        const {file, line} = req.body || {};
+        const retry = await retryQueueFileItem(this.#opts.queueDir, file, line);
+        const filePath = resolveQueueFile(this.#opts.queueDir, file);
+        this.#scheduler.schedule(filePath, fp =>
+          this.#spawnDownload(fp, ['--line', String(retry.line), '--remirror']),
+        );
+        res.json(
+          apiJson({
+            ok: true,
+            ...retry,
+            download: this.#scheduler.getStatus(filePath),
           }),
         );
       } catch (err) {
