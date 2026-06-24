@@ -1500,10 +1500,17 @@ export default class QueueServer {
     if (this.#opts.config) await assertReadable(this.#opts.config, 'config file');
     if (this.#opts.outputDir) {
       try {
+        await mkdir(this.#opts.outputDir, {recursive: true});
         await access(this.#opts.outputDir, fsConstants.R_OK | fsConstants.W_OK);
       } catch {
         throw new Error(`output directory not writable: ${this.#opts.outputDir}`);
       }
+    }
+
+    try {
+      await mkdir(this.#opts.queueDir, {recursive: true});
+    } catch (err) {
+      throw new Error(`queue directory not writable: ${this.#opts.queueDir}`);
     }
 
     await sanitizeQueueDirectory(this.#opts.queueDir);

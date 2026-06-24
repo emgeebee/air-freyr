@@ -515,13 +515,33 @@ async function mirrorDownloadedTrack(sourcePath, mirrorRoots, batchMeta, track, 
   const copied = [];
   const source = xpath.resolve(sourcePath);
   for (const root of mirrorRoots) {
-    const dest = xpath.join(root, paths.trackPath, paths.outFileName);
+    const destDir = xpath.join(root, paths.trackPath);
+    await mkdirp(root);
+    await mkdirp(destDir);
+    const dest = xpath.join(destDir, paths.outFileName);
     if (xpath.resolve(dest) === source) continue;
-    await mkdirp(xpath.dirname(dest));
     await fs.copyFile(sourcePath, dest);
     copied.push(dest);
   }
   return copied;
+}
+
+async function ensureBatchTrackDirectories(
+  baseDir,
+  mirrorRoots,
+  batchMeta,
+  track,
+  format,
+) {
+  const batchPaths = resolveBatchSingleTrackPaths(batchMeta, track, format);
+  if (!batchPaths) return;
+  await mkdirp(xpath.join(baseDir, batchPaths.trackPath));
+  const mirrorPaths = resolveCompilationMirrorPaths(batchMeta, track, format);
+  if (!mirrorPaths || !mirrorRoots?.length) return;
+  for (const root of mirrorRoots) {
+    await mkdirp(root);
+    await mkdirp(xpath.join(root, mirrorPaths.trackPath));
+  }
 }
 
 async function findExistingTrackFiles(
@@ -1213,11 +1233,17 @@ async function init(packageJson, queries, options) {
     Config.dirs.output,
   );
 
-  if (!(await maybeStat(BASE_DIRECTORY)))
-    stackLogger.error(
-      `\x1b[31m[!]\x1b[0m Working directory [${BASE_DIRECTORY}] doesn't exist`,
-    ),
+  if (!(await maybeStat(BASE_DIRECTORY))) {
+    try {
+      await mkdirp(BASE_DIRECTORY);
+    } catch (err) {
+      stackLogger.error(
+        `\x1b[31m[!]\x1b[0m Failed to create working directory [${BASE_DIRECTORY}]`,
+      );
+      stackLogger.error(err["message"] || err);
       process.exit(5);
+    }
+  }
 
   if (
     (await processPromise(
@@ -1262,6 +1288,18 @@ async function init(packageJson, queries, options) {
       ),
     ),
   );
+
+  for (const mirrorRoot of MIRROR_ROOTS) {
+    try {
+      await mkdirp(mirrorRoot);
+    } catch (err) {
+      stackLogger.error(
+        `\x1b[31m[!]\x1b[0m Failed to create mirror directory [${mirrorRoot}]`,
+      );
+      stackLogger.error(err["message"] || err);
+      process.exit(5);
+    }
+  }
 
   Config.dirs.cache.path =
     Config.dirs.cache.path === "<tmp>"
@@ -2297,7 +2335,20 @@ async function init(packageJson, queries, options) {
       const processTrack = (!fileExists || options.force) && filterStat.status;
       let collectSources;
       let directSource;
-      if (processTrack)
+      if (processTrack) {
+        if (useBatchLayout && batchMeta) {
+          await ensureBatchTrackDirectories(
+            BASE_DIRECTORY,
+            MIRROR_ROOTS,
+            batchMeta,
+            track,
+            options.format,
+          ).catch((err) => Promise.reject({ err, [symbols.errorCode]: 6 }));
+        } else {
+          await mkdirp(xpath.dirname(outFilePath)).catch((err) =>
+            Promise.reject({ err, [symbols.errorCode]: 6 }),
+          );
+        }
         if (service[symbols.meta].ID === "youtube" && track.directSource) {
           directSource = {
             service,
@@ -2315,6 +2366,7 @@ async function init(packageJson, queries, options) {
             (results) => results,
             (msg) => logger.log(msg),
           );
+      }
       const meta = {
         trackName,
         outFile: { path: outFilePath },
@@ -2631,6 +2683,13 @@ async function init(packageJson, queries, options) {
               batchPaths.outFileName,
             );
             if (options.remirror) {
+              await ensureBatchTrackDirectories(
+                BASE_DIRECTORY,
+                MIRROR_ROOTS,
+                batchMeta,
+                { name: batchMeta.title || batchMeta.artist },
+                options.format,
+              );
               const sourcePath =
                 fileExistsIn.find(
                   (path) => xpath.resolve(path) === xpath.resolve(primaryPath),
