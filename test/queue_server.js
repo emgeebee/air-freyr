@@ -58,6 +58,7 @@ function request(port, method, requestPath, body) {
 
 async function main() {
   assert.equal(genreFromQueueFile('pop.txt'), 'Pop');
+  assert.equal(genreFromQueueFile('kids.txt'), 'Kids');
   assert.equal(genreFromQueueFile('folk rock.txt'), 'Folk Rock');
   assert.equal(genreFromQueueFile('folk-rock.txt'), 'Folk Rock');
   assert.deepEqual(
@@ -140,6 +141,8 @@ async function main() {
     assert.match(root.text, /id="add-song"/);
     assert.match(root.text, /id="paste-lines"/);
     assert.match(root.text, /id="rename-list"/);
+    assert.match(root.text, /\.split\(\/\[\\s_-\]\+\/\)/);
+    assert.doesNotMatch(root.text, /\.split\(\/\[s_-\]\+\/\)/);
 
     const lists = await request(port, 'GET', '/api/lists');
     assert.equal(lists.status, 200);

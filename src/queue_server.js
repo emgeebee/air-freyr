@@ -960,7 +960,7 @@ function queueUiHtml(version) {
       var stem = stripTxtExtension(queueFileBaseName(file));
       if (!stem) return 'Unknown';
       return stem
-        .split(/[\s_-]+/)
+        .split(/[\\s_-]+/)
         .filter(Boolean)
         .map(function(word) {
           return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
