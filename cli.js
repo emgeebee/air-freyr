@@ -456,10 +456,7 @@ function resolveBatchSingleTrackPaths(batchMeta, track, format) {
   if (!title) return null;
   const trackBaseName = `${batchMeta.artist} - ${title}`;
   const outFileName = `${filenamify(trackBaseName, { replacement: "_" })}.${format}`;
-  const trackPath = xpath.join(
-    filenamify(batchMeta.genre, { replacement: "_" }),
-    filenamify("youtube", { replacement: "_" }),
-  );
+  const trackPath = filenamify(batchMeta.genre, { replacement: "_" });
   return { trackPath, outFileName, trackBaseName };
 }
 
@@ -2213,12 +2210,9 @@ async function init(packageJson, queries, options) {
       const trackPath =
         batchPaths?.trackPath ||
         (isSingleTrack
-          ? xpath.join(
-              filenamify(
-                batchMeta?.genre || (track.genres || [])[0] || "Unknown",
-                { replacement: "_" },
-              ),
-              filenamify("youtube", { replacement: "_" }),
+          ? filenamify(
+              batchMeta?.genre || (track.genres || [])[0] || "Unknown",
+              { replacement: "_" },
             )
           : xpath.join(
               ...(options.tree
