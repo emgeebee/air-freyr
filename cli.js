@@ -1282,13 +1282,18 @@ async function init(packageJson, queries, options) {
     {
       output: options.directory,
       check: options.checkDir,
+      mirror: options.mirrorDir,
       cache: {
         path: options.cacheDir,
         keep: !options.rmCache,
       },
     },
     (a, b, k) =>
-      k === "check" && [a, b].every(Array.isArray) ? a.concat(b) : undefined,
+      k === "check" && [a, b].every(Array.isArray)
+        ? a.concat(b)
+        : k === "mirror" && [a, b].every(Array.isArray)
+          ? Array.from(new Set(a.concat(b)))
+          : undefined,
   );
   Config.opts = _merge(Config.opts, {
     netCheck: options.netCheck,
@@ -3183,6 +3188,14 @@ function prepCli(packageJson) {
         "(example: `-D dir1 -D dir2 -D dir3,dir4`)",
       ].join("\n"),
       (spec, stack) => (stack || []).concat(spec.split(",")),
+    )
+    .option(
+      "--mirror-dir <DIR>",
+      [
+        "copy batch downloads to DIR/Genre/Compilations/YouTube (repeatable)",
+        "(also set via conf dirs.mirror or AIRFREYR_MIRROR_DIRS)",
+      ].join("\n"),
+      (spec, stack) => (stack || []).concat(spec),
     )
     .option(
       "-c, --cover <NAME>",

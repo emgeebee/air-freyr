@@ -1470,6 +1470,7 @@ export default class QueueServer {
   #opts;
   #scheduler = new FileDownloadScheduler();
   #server = null;
+  #mirrorRoots = [];
 
   constructor(opts = {}) {
     this.#opts = resolveServeConfig(opts, opts.projectConfig);
@@ -1479,11 +1480,25 @@ export default class QueueServer {
     return `http://${this.#opts.hostname}:${this.#opts.port}`;
   }
 
-  #spawnDownload(filePath, extraArgs = []) {
+  async #resolveMirrorRoots() {
+    let projectConfig = {};
+    if (this.#opts.config) projectConfig = await loadProjectConfig(this.#opts.config);
+    let roots = collectMirrorRoots(projectConfig, this.#opts.outputDir);
+    if (!roots.length && this.#opts.outputDir && projectConfig.dirs?.mirrorToOutput !== false)
+      roots = [path.resolve(this.#opts.outputDir)];
+    return roots;
+  }
+
+  async #spawnDownload(filePath, extraArgs = []) {
+    const mirrorRoots = await this.#resolveMirrorRoots();
     return new Promise((resolve, reject) => {
       const dlArgs = ['-i', filePath, '--no-logo', '--no-header', ...extraArgs, ...this.#opts.extraCliArgs];
       if (this.#opts.outputDir) dlArgs.push('-d', this.#opts.outputDir);
       if (this.#opts.config) dlArgs.push('-o', this.#opts.config);
+      for (const mirrorRoot of mirrorRoots) dlArgs.push('--mirror-dir', mirrorRoot);
+
+      const spawnEnv = { ...process.env };
+      if (mirrorRoots.length) spawnEnv.AIRFREYR_MIRROR_DIRS = mirrorRoots.join(',');
 
       const useNpx = process.env.AIRFREYR_SPAWN_NPX === '1';
       const cmd = useNpx ? 'npx' : process.execPath;
@@ -1492,12 +1507,16 @@ export default class QueueServer {
         : [CLI_PATH, ...dlArgs];
 
       console.log(`[airfreyr serve] download: ${cmd} ${args.join(' ')}`);
+      if (mirrorRoots.length)
+        console.log(`[airfreyr serve] mirror directories: ${mirrorRoots.join(', ')}`);
+      else
+        console.warn('[airfreyr serve] no mirror directories configured for this download');
 
       let output = '';
       const child = spawn(cmd, args, {
         cwd: useNpx ? this.#opts.queueDir : path.dirname(CLI_PATH),
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: process.env,
+        env: spawnEnv,
       });
       const collectOutput = chunk => {
         process.stdout.write(chunk);
@@ -1553,14 +1572,18 @@ export default class QueueServer {
       }
     }
 
-    const mirrorRoots = collectMirrorRoots(projectConfig, this.#opts.outputDir);
-    for (const mirrorRoot of mirrorRoots) {
+    this.#mirrorRoots = await this.#resolveMirrorRoots();
+    for (const mirrorRoot of this.#mirrorRoots) {
       try {
         await assertWritableDir(mirrorRoot, 'mirror directory');
       } catch (err) {
         console.warn(`[airfreyr serve] ${err.message}`);
       }
     }
+    if (!this.#mirrorRoots.length)
+      console.warn(
+        '[airfreyr serve] no mirror directories configured — add dirs.mirror to conf.json, set AIRFREYR_MIRROR_DIRS, or use mirrorToOutput',
+      );
 
     try {
       await mkdir(this.#opts.queueDir, {recursive: true});
@@ -1729,8 +1752,8 @@ export default class QueueServer {
     console.log(`[airfreyr serve] queue directory: ${path.resolve(this.#opts.queueDir)}`);
     if (this.#opts.outputDir)
       console.log(`[airfreyr serve] output directory: ${path.resolve(this.#opts.outputDir)}`);
-    if (mirrorRoots.length)
-      console.log(`[airfreyr serve] mirror directories: ${mirrorRoots.join(', ')}`);
+    if (this.#mirrorRoots.length)
+      console.log(`[airfreyr serve] mirror directories: ${this.#mirrorRoots.join(', ')}`);
     console.log(`[airfreyr serve] POST ${this.baseUrl}/add`);
     return this;
   }
