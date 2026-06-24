@@ -1,11 +1,24 @@
 import { spawn } from 'child_process';
 import { readFileSync, constants as fsConstants } from 'fs';
-import { access, appendFile, mkdir, readFile, readdir, rename, writeFile } from 'fs/promises';
+import { access, mkdir, readFile, readdir, rename, unlink, writeFile } from 'fs/promises';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
 import cors from 'cors';
 import express from 'express';
+
+import {
+  QUEUE_FILE_EXTENSION,
+  emptyQueueDocument,
+  ensureQueueExtension,
+  genreFromQueueFilename,
+  importCsvText,
+  normalizeStoredEntry,
+  parseQueueDocument,
+  serializeQueueDocument,
+  stripQueueExtension,
+  toApiEntry,
+} from './queue_format.js';
 
 const PACKAGE_ROOT = path.join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const CLI_PATH = path.join(PACKAGE_ROOT, 'cli.js');
@@ -120,18 +133,15 @@ export function resolveServeConfig(opts = {}, projectConfig = {}) {
   };
 }
 
-function escapeCsvField(field) {
-  if (field == null) return '';
-  const value = String(field);
-  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
-  return value;
+export const genreFromQueueFile = genreFromQueueFilename;
+
+async function readQueueDocument(filePath) {
+  const text = await readFile(filePath, 'utf8');
+  return parseQueueDocument(text);
 }
 
-export function formatBatchCsvLine({genre, artist, title, path: url}) {
-  const fields = [genre, artist];
-  if (title) fields.push(title);
-  fields.push(url);
-  return `${fields.map(escapeCsvField).join(',')}\n`;
+async function writeQueueDocument(filePath, document) {
+  await writeFile(filePath, serializeQueueDocument(document), 'utf8');
 }
 
 function resolveQueueFile(dataDir, file) {
@@ -140,139 +150,15 @@ function resolveQueueFile(dataDir, file) {
   const resolved = path.resolve(base, file);
   if (resolved !== base && !resolved.startsWith(`${base}${path.sep}`))
     throw new Error('`file` must resolve within the data directory');
-  if (!resolved.endsWith('.txt')) throw new Error('`file` must be a .txt queue file');
+  if (!resolved.toLowerCase().endsWith('.json'))
+    throw new Error('`file` must be a .json queue file');
   return resolved;
 }
 
-function parseCsvLine(line) {
-  const parts = [];
-  let current = '';
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i];
-    if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        current += '"';
-        i += 1;
-      } else inQuotes = !inQuotes;
-    } else if (ch === ',' && !inQuotes) {
-      parts.push(current.trim());
-      current = '';
-    } else current += ch;
-  }
-  parts.push(current.trim());
-  return parts;
-}
-
-function splitEditableLines(text) {
-  const trailingNewline = /\r?\n$/.test(text);
-  const lines = text ? text.split(/\r?\n/) : [];
-  if (trailingNewline) lines.pop();
-  return {
-    lines,
-    newline: text.includes('\r\n') ? '\r\n' : '\n',
-    trailingNewline,
-  };
-}
-
-function joinEditableLines(lines, newline, trailingNewline) {
-  if (lines.length === 0) return '';
-  return `${lines.join(newline)}${trailingNewline ? newline : ''}`;
-}
-
-function splitQueueLineBody(rawLine) {
-  const disabled = /^\s*#/.test(rawLine);
-  const prefix = disabled ? rawLine.match(/^(\s*#\s?)/)[1] : '';
-  const body = rawLine.replace(/^\s*#\s?/, '');
-  const noteMatch = body.match(/(\s+#.*)$/);
-  const note = noteMatch ? noteMatch[1] : '';
-  const content = (noteMatch ? body.slice(0, noteMatch.index) : body).trim();
-  return {prefix, content, note};
-}
-
-export function fixDuplicateFilenameCsvField(rawLine, fileStem) {
-  if (!fileStem) return {line: rawLine, changed: false};
-  if (!rawLine.trim()) return {line: rawLine, changed: false};
-
-  const {prefix, content, note} = splitQueueLineBody(rawLine);
-  if (!content) return {line: rawLine, changed: false};
-
-  const parts = parseCsvLine(content);
-  const urlIndex = parts.findIndex(part => /^https?:\/\//i.test(part));
-  if (urlIndex < 0 || parts.length !== 4) return {line: rawLine, changed: false};
-  if (parts[0] !== fileStem) return {line: rawLine, changed: false};
-
-  const fixedContent = parts.slice(1).map(escapeCsvField).join(',');
-  const line = `${prefix}${fixedContent}${note}`;
-  return {line, changed: line !== rawLine};
-}
-
-async function sanitizeQueueFile(filePath, fileStem) {
-  const text = await readFile(filePath, 'utf8');
-  const {lines, newline, trailingNewline} = splitEditableLines(text);
-  let changed = false;
-  const fixedLines = lines.map(line => {
-    const result = fixDuplicateFilenameCsvField(line, fileStem);
-    if (result.changed) changed = true;
-    return result.line;
-  });
-  if (!changed) return false;
-  await writeFile(filePath, joinEditableLines(fixedLines, newline, trailingNewline), 'utf8');
-  return true;
-}
-
-async function sanitizeQueueDirectory(dataDir) {
-  let dirents;
-  try {
-    dirents = await readdir(dataDir, {withFileTypes: true});
-  } catch (err) {
-    if (err.code === 'ENOENT') return;
-    throw err;
-  }
-
-  for (const dirent of dirents) {
-    if (!dirent.isFile() || !dirent.name.endsWith('.txt')) continue;
-    const filePath = resolveQueueFile(dataDir, dirent.name);
-    const fileStem = dirent.name.replace(/\.txt$/i, '');
-    if (await sanitizeQueueFile(filePath, fileStem))
-      console.log(`[airfreyr serve] removed duplicate filename field in ${dirent.name}`);
-  }
-}
-
-function parseQueueEntry(rawLine, index) {
-  const raw = rawLine.trim();
-  if (!raw) return null;
-
-  const disabled = /^\s*#/.test(rawLine);
-  const body = disabled ? rawLine.replace(/^\s*#\s?/, '') : rawLine;
-  const note = (body.match(/#(.*)$/) || [])[1]?.trim() || '';
-  const content = body.replace(/#.*$/, '').trim();
-  const parts = parseCsvLine(content);
-  const urlIndex = parts.findIndex(part => /^https?:\/\//i.test(part));
-  const fields = urlIndex >= 0 ? parts.slice(0, urlIndex) : [];
-  const url = urlIndex >= 0 ? parts.slice(urlIndex).join(',').trim() : content;
-  const [genre, artist, title] = fields;
-  const label = [artist, title].filter(Boolean).join(' - ') || title || url || raw;
-
-  return {
-    line: index + 1,
-    disabled,
-    genre: genre || '',
-    artist: artist || '',
-    title: title || '',
-    url: url || '',
-    note,
-    label,
-    raw,
-  };
-}
-
-async function readQueueEntries(filePath) {
-  const text = await readFile(filePath, 'utf8');
-  return text
-    .split(/\r?\n/)
-    .map((line, index) => parseQueueEntry(line, index))
-    .filter(Boolean);
+async function readQueueEntries(filePath, file) {
+  const fileGenre = genreFromQueueFilename(file);
+  const document = await readQueueDocument(filePath);
+  return document.entries.map((entry, index) => toApiEntry(entry, index, fileGenre));
 }
 
 function summarizeEntries(entries) {
@@ -294,11 +180,11 @@ async function listQueueFiles(dataDir) {
 
   return Promise.all(
     dirents
-      .filter(dirent => dirent.isFile() && dirent.name.endsWith('.txt'))
+      .filter(dirent => dirent.isFile() && dirent.name.toLowerCase().endsWith('.json'))
       .sort((a, b) => a.name.localeCompare(b.name))
       .map(async dirent => {
         const filePath = resolveQueueFile(dataDir, dirent.name);
-        const entries = await readQueueEntries(filePath);
+        const entries = await readQueueEntries(filePath, dirent.name);
         return {
           file: dirent.name,
           filePath,
@@ -310,7 +196,7 @@ async function listQueueFiles(dataDir) {
 
 async function readQueueFile(dataDir, file) {
   const filePath = resolveQueueFile(dataDir, file);
-  const entries = await readQueueEntries(filePath);
+  const entries = await readQueueEntries(filePath, file);
   return {
     file,
     filePath,
@@ -321,10 +207,9 @@ async function readQueueFile(dataDir, file) {
 
 function normalizeQueueFileName(file) {
   if (!file || typeof file !== 'string') throw new Error('`file` is required');
-  const trimmed = file.trim();
-  if (!trimmed.endsWith('.txt')) throw new Error('`file` must end with .txt');
+  const trimmed = ensureQueueExtension(file.trim());
   if (path.basename(trimmed) !== trimmed) throw new Error('`file` must be a filename only');
-  if (trimmed === '.txt') throw new Error('invalid `file` name');
+  if (trimmed === '.json') throw new Error('invalid `file` name');
   return trimmed;
 }
 
@@ -338,7 +223,7 @@ async function createQueueFile(dataDir, file) {
     if (err.code !== 'ENOENT') throw err;
   }
   await mkdir(path.dirname(filePath), {recursive: true});
-  await writeFile(filePath, '', 'utf8');
+  await writeQueueDocument(filePath, emptyQueueDocument());
   return readQueueFile(dataDir, name);
 }
 
@@ -369,22 +254,14 @@ async function updateQueueFileItem(dataDir, file, line, action) {
   if (!Number.isInteger(lineNumber) || lineNumber < 1) throw new Error('`line` must be a positive integer');
   if (!['disable', 'delete'].includes(action)) throw new Error('`action` must be "disable" or "delete"');
 
-  const text = await readFile(filePath, 'utf8');
-  const {lines, newline, trailingNewline} = splitEditableLines(text);
+  const document = await readQueueDocument(filePath);
   const index = lineNumber - 1;
-  if (index >= lines.length) throw new Error('`line` does not exist in the selected file');
-  if (!lines[index].trim()) throw new Error('`line` must reference a song entry');
+  if (index >= document.entries.length) throw new Error('`line` does not exist in the selected file');
 
-  if (action === 'disable') {
-    if (!/^\s*#/.test(lines[index])) {
-      const [, indent, body] = lines[index].match(/^(\s*)(.*)$/);
-      lines[index] = `${indent}# ${body}`;
-    }
-  } else {
-    lines.splice(index, 1);
-  }
+  if (action === 'disable') document.entries[index].disabled = true;
+  else document.entries.splice(index, 1);
 
-  await writeFile(filePath, joinEditableLines(lines, newline, trailingNewline), 'utf8');
+  await writeQueueDocument(filePath, document);
   return readQueueFile(dataDir, file);
 }
 
@@ -398,47 +275,6 @@ async function retryQueueFileItem(dataDir, file, line) {
   return {file, line: lineNumber, entry};
 }
 
-function titleCaseGenreStem(stem) {
-  return stem
-    .split(/[\s_-]+/)
-    .filter(Boolean)
-    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join(' ');
-}
-
-export function genreFromQueueFile(file) {
-  const stem = path.basename(String(file).trim()).replace(/\.txt$/i, '');
-  if (!stem) throw new Error('invalid queue file name');
-  return titleCaseGenreStem(stem);
-}
-
-function parseQueueFields(fields, fileGenre, lineNumber) {
-  let genre;
-  let artist;
-  let title;
-  if (fileGenre) {
-    genre = fileGenre;
-    if (fields.length >= 3) {
-      artist = fields[1];
-      title = fields.slice(2).join(',');
-    } else if (fields.length === 2) {
-      artist = fields[0];
-      title = fields[1];
-    } else if (fields.length === 1) {
-      artist = fields[0];
-      title = '';
-    } else throw new Error(`line ${lineNumber}: artist is required`);
-  } else {
-    genre = fields[0];
-    artist = fields[1];
-    if (!genre) throw new Error(`line ${lineNumber}: genre is required`);
-    if (!artist) throw new Error(`line ${lineNumber}: artist is required`);
-    title = fields.length > 2 ? fields.slice(2).join(',') : '';
-  }
-  if (!artist) throw new Error(`line ${lineNumber}: artist is required`);
-  return {genre, artist, title};
-}
-
 function normalizeAddPayload(body) {
   if (!body || typeof body !== 'object') throw new Error('request body must be a JSON object');
   const {file, artist, title} = body;
@@ -447,53 +283,57 @@ function normalizeAddPayload(body) {
   if (!artist) throw new Error('`artist` is required');
   if (!url) throw new Error('`path` is required');
   if (!/^https?:\/\//i.test(url)) throw new Error('`path` must be an http(s) URL');
+  const fileGenre = genreFromQueueFilename(file);
   return {
     file,
-    genre: body.genre || genreFromQueueFile(file),
-    artist,
-    title: title || '',
-    path: url,
+    entry: normalizeStoredEntry(
+      {
+        genre: body.genre || fileGenre,
+        artist,
+        title: title || '',
+        url,
+      },
+      fileGenre,
+    ),
   };
-}
-
-function parseBulkQueueLine(rawLine, lineNumber, fileGenre) {
-  const trimmed = rawLine.trim();
-  if (!trimmed) return null;
-  const disabled = /^\s*#/.test(rawLine);
-  const body = rawLine.replace(/^\s*#\s?/, '');
-  const content = body.replace(/#.*$/, '').trim();
-  if (!content) return null;
-  const parts = parseCsvLine(content);
-  const urlIndex = parts.findIndex(part => /^https?:\/\//i.test(part));
-  if (urlIndex < 0) throw new Error(`line ${lineNumber}: missing http(s) URL`);
-  const fields = parts.slice(0, urlIndex);
-  const url = parts.slice(urlIndex).join(',').trim();
-  const {genre, artist, title} = parseQueueFields(fields, fileGenre, lineNumber);
-  return {genre, artist, title, path: url, disabled};
-}
-
-function formatBulkQueueLine(item) {
-  const line = formatBatchCsvLine(item).trimEnd();
-  return item.disabled ? `# ${line}\n` : formatBatchCsvLine(item);
-}
-
-function parseBulkQueueText(text, file) {
-  const fileGenre = genreFromQueueFile(file);
-  const items = [];
-  for (const [index, rawLine] of text.split(/\r?\n/).entries()) {
-    const item = parseBulkQueueLine(rawLine, index + 1, fileGenre);
-    if (item) items.push(item);
-  }
-  if (!items.length) throw new Error('no valid queue lines found');
-  return items;
 }
 
 async function appendBulkQueueLines(dataDir, file, text) {
   const filePath = resolveQueueFile(dataDir, file);
-  const items = parseBulkQueueText(text, file);
-  await mkdir(path.dirname(filePath), {recursive: true});
-  await appendFile(filePath, items.map(formatBulkQueueLine).join(''), 'utf8');
-  return {file, added: items.length, ...(await readQueueFile(dataDir, file))};
+  const fileGenre = genreFromQueueFilename(file);
+  const imported = importCsvText(text, file);
+  const document = await readQueueDocument(filePath);
+  document.entries.push(...imported);
+  await writeQueueDocument(filePath, document);
+  return {file, added: imported.length, ...(await readQueueFile(dataDir, file))};
+}
+
+async function migrateTxtQueueFiles(dataDir) {
+  let dirents;
+  try {
+    dirents = await readdir(dataDir, {withFileTypes: true});
+  } catch (err) {
+    if (err.code === 'ENOENT') return;
+    throw err;
+  }
+
+  for (const dirent of dirents) {
+    if (!dirent.isFile() || !dirent.name.toLowerCase().endsWith('.txt')) continue;
+    const txtPath = path.join(dataDir, dirent.name);
+    const jsonName = ensureQueueExtension(stripQueueExtension(dirent.name));
+    const jsonPath = path.join(dataDir, jsonName);
+    const text = await readFile(txtPath, 'utf8');
+    const document = {entries: importCsvText(text, jsonName)};
+    try {
+      await access(jsonPath, fsConstants.F_OK);
+      console.warn(`[airfreyr serve] skipped ${dirent.name} migration — ${jsonName} already exists`);
+    } catch (err) {
+      if (err.code !== 'ENOENT') throw err;
+      await writeQueueDocument(jsonPath, document);
+      console.log(`[airfreyr serve] migrated ${dirent.name} → ${jsonName}`);
+    }
+    await unlink(txtPath);
+  }
 }
 
 class FileDownloadScheduler {
@@ -920,7 +760,7 @@ function queueUiHtml(version) {
       </div>
       <form id="paste-lines-form">
         <div class="modal-body">
-          <p class="hint">One song per line as CSV: <code>artist,title,url</code> (title optional). Genre comes from the list filename. Lines starting with <code>#</code> are saved as disabled entries. Blank lines and plain comments are skipped.</p>
+          <p class="hint">One song per line as CSV: <code>artist,title,url</code> (title optional). Genre comes from the list filename. Lines starting with <code>#</code> are imported as disabled entries. Blank lines are skipped.</p>
           <div class="field">
             <label for="paste-lines-input">Queue lines</label>
             <textarea id="paste-lines-input" name="lines" required placeholder="Kids,Moana,You're Welcome,https://www.youtube.com/watch?v=G8QjumNNNBY"></textarea>
@@ -941,7 +781,7 @@ function queueUiHtml(version) {
       </div>
       <form id="rename-list-form">
         <div class="modal-body">
-          <p class="hint">Genre is taken from the list name. Use spaces or hyphens for multi-word genres, e.g. <code>folk rock.txt</code> → Folk Rock.</p>
+          <p class="hint">Genre is taken from the list name. Use spaces or hyphens for multi-word genres, e.g. <code>folk rock.json</code> → Folk Rock.</p>
           <div class="field">
             <label for="rename-list-input">List name</label>
             <input id="rename-list-input" name="newFile" type="text" required autocomplete="off">
@@ -987,19 +827,19 @@ function queueUiHtml(version) {
       return slash >= 0 ? value.slice(slash + 1) : value;
     }
 
-    function stripTxtExtension(name) {
+    function stripJsonExtension(name) {
       var value = String(name || '');
-      return value.toLowerCase().slice(-4) === '.txt' ? value.slice(0, -4) : value;
+      return value.toLowerCase().slice(-5) === '.json' ? value.slice(0, -5) : value;
     }
 
-    function ensureTxtExtension(name) {
+    function ensureJsonExtension(name) {
       var value = String(name || '').trim();
       if (!value) return value;
-      return value.toLowerCase().slice(-4) === '.txt' ? value : value + '.txt';
+      return value.toLowerCase().slice(-5) === '.json' ? value : value + '.json';
     }
 
     function genreFromListFile(file) {
-      var stem = stripTxtExtension(queueFileBaseName(file));
+      var stem = stripJsonExtension(queueFileBaseName(file));
       if (!stem) return 'Unknown';
       return stem
         .split(/[\\s_-]+/)
@@ -1057,7 +897,7 @@ function queueUiHtml(version) {
       setError('');
       document.getElementById('rename-list-title').textContent =
         'Rename ' + genreFromListFile(state.selectedFile);
-      document.getElementById('rename-list-input').value = stripTxtExtension(state.selectedFile);
+      document.getElementById('rename-list-input').value = stripJsonExtension(state.selectedFile);
       renameListModal.hidden = false;
       document.getElementById('rename-list-input').focus();
       document.getElementById('rename-list-input').select();
@@ -1141,7 +981,7 @@ function queueUiHtml(version) {
     function renderLists() {
       listCountEl.textContent = state.lists.length ? state.lists.length + ' list(s)' : '';
       if (!state.lists.length) {
-        listsEl.innerHTML = '<div class="empty">No .txt queue lists found.</div>';
+        listsEl.innerHTML = '<div class="empty">No .json queue lists found.</div>';
         return;
       }
 
@@ -1163,7 +1003,7 @@ function queueUiHtml(version) {
 
     function songTitle(entry) {
       if (entry.artist && entry.title) return entry.artist + ' - ' + entry.title;
-      return entry.title || entry.artist || entry.url || entry.raw;
+      return entry.title || entry.artist || entry.url || entry.label || '';
     }
 
     function songMeta(entry) {
@@ -1201,7 +1041,8 @@ function queueUiHtml(version) {
           row.querySelector('h3').appendChild(badge);
         }
         row.querySelector('.meta').textContent = songMeta(entry);
-        row.querySelector('.raw').textContent = 'Line ' + entry.line + ': ' + text(entry.raw);
+        row.querySelector('.raw').textContent =
+          'Line ' + entry.line + (entry.note ? ': ' + text(entry.note) : '');
 
         var actions = row.querySelector('.actions');
         if (!entry.disabled) {
@@ -1313,7 +1154,7 @@ function queueUiHtml(version) {
         setError('List name is required');
         return;
       }
-      file = ensureTxtExtension(file);
+      file = ensureJsonExtension(file);
       setError('');
       return requestJson('/api/list', {
         method: 'POST',
@@ -1413,7 +1254,7 @@ function queueUiHtml(version) {
         setError('List name is required');
         return;
       }
-      newFile = ensureTxtExtension(newFile);
+      newFile = ensureJsonExtension(newFile);
       setError('');
       var submitBtn = renameListForm.querySelector('button[type="submit"]');
       submitBtn.disabled = true;
@@ -1548,9 +1389,15 @@ export default class QueueServer {
     });
   }
 
-  async #appendLine(filePath, item) {
+  async #appendEntry(filePath, entry) {
     await mkdir(path.dirname(filePath), {recursive: true});
-    await appendFile(filePath, formatBatchCsvLine(item), 'utf8');
+    const document = await readQueueDocument(filePath).catch(err => {
+      if (err.code === 'ENOENT') return emptyQueueDocument();
+      throw err;
+    });
+    document.entries.push(entry);
+    await writeQueueDocument(filePath, document);
+    return document.entries.length;
   }
 
   async start() {
@@ -1591,7 +1438,7 @@ export default class QueueServer {
       throw new Error(`queue directory not writable: ${this.#opts.queueDir}`);
     }
 
-    await sanitizeQueueDirectory(this.#opts.queueDir);
+    await migrateTxtQueueFiles(this.#opts.queueDir);
 
     const app = express().use(cors()).use(express.json({limit: '256kb'}));
 
@@ -1709,17 +1556,17 @@ export default class QueueServer {
 
     app.post('/add', async (req, res) => {
       try {
-        const item = normalizeAddPayload(req.body);
-        const filePath = resolveQueueFile(this.#opts.queueDir, item.file);
-        const line = formatBatchCsvLine(item).trimEnd();
-        await this.#appendLine(filePath, item);
+        const {file, entry} = normalizeAddPayload(req.body);
+        const filePath = resolveQueueFile(this.#opts.queueDir, file);
+        const line = await this.#appendEntry(filePath, entry);
         this.#scheduler.schedule(filePath, fp => this.#spawnDownload(fp));
         res.status(201).json(
           apiJson({
             ok: true,
-            file: item.file,
+            file,
             filePath,
             line,
+            entry,
             download: this.#scheduler.getStatus(filePath),
           }),
         );

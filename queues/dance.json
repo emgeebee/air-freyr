@@ -1,0 +1,40 @@
+{
+  "entries": [
+    {
+      "artist": "The Weekend",
+      "title": "Can't Feel My Face",
+      "url": "https://www.youtube.com/watch?v=KEI4qSrkPAs",
+      "disabled": false
+    },
+    {
+      "artist": "Foster the People",
+      "title": "Pumped Up Kicks",
+      "url": "https://www.youtube.com/watch?v=SDTZ7iX4vTQ&list=RDSDTZ7iX4vTQ&start_radio=1",
+      "disabled": false
+    },
+    {
+      "artist": "Lorde",
+      "title": "Royals",
+      "url": "https://www.youtube.com/watch?v=LFasFq4GJYM&list=RDLFasFq4GJYM&start_radio=1",
+      "disabled": false
+    },
+    {
+      "artist": "Meghan Trainor",
+      "title": "All About That Bass",
+      "url": "https://www.youtube.com/watch?v=7PCkvCPvDXk&list=RD7PCkvCPvDXk&start_radio=1",
+      "disabled": false
+    },
+    {
+      "artist": "LMFAO",
+      "title": "Sexy And I Know It",
+      "url": "https://www.youtube.com/watch?v=wyx6JDQCslE&list=RDwyx6JDQCslE&start_radio=1",
+      "disabled": false
+    },
+    {
+      "artist": "The Weekend",
+      "title": "Can't Feel My Face",
+      "url": "https://www.youtube.com/watch?v=KEI4qSrkPAs",
+      "disabled": false
+    }
+  ]
+}

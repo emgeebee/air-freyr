@@ -13,7 +13,7 @@ services:
       AIRFREYR_CONFIG: /data/config/conf.json
       AIRFREYR_REFRESH_HOURS: "3"
     volumes:
-      # queue .txt files (e.g. arlo.txt)
+      # queue .json files (e.g. kids.json)
       - ./queues:/data/queues
       # downloaded tracks
       - ./music:/data/music

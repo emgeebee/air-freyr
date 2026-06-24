@@ -5,7 +5,12 @@ import {tmpdir} from 'os';
 import path from 'path';
 import {mkdtemp, readFile, rm, writeFile} from 'fs/promises';
 
-import QueueServer, {fixDuplicateFilenameCsvField, genreFromQueueFile} from '../src/queue_server.js';
+import QueueServer, {genreFromQueueFile} from '../src/queue_server.js';
+import {
+  importCsvText,
+  parseQueueDocument,
+  serializeQueueDocument,
+} from '../src/queue_format.js';
 
 async function freePort() {
   return new Promise((resolve, reject) => {
@@ -57,72 +62,58 @@ function request(port, method, requestPath, body) {
 }
 
 async function main() {
-  assert.equal(genreFromQueueFile('pop.txt'), 'Pop');
-  assert.equal(genreFromQueueFile('kids.txt'), 'Kids');
-  assert.equal(genreFromQueueFile('folk rock.txt'), 'Folk Rock');
-  assert.equal(genreFromQueueFile('folk-rock.txt'), 'Folk Rock');
-  assert.deepEqual(
-    fixDuplicateFilenameCsvField(
-      'pop,Dance,Foster the People,https://example.com/track # pumped up kicks',
-      'pop',
-    ),
-    {
-      line: 'Dance,Foster the People,https://example.com/track # pumped up kicks',
-      changed: true,
-    },
-  );
-  assert.deepEqual(
-    fixDuplicateFilenameCsvField(
-      "Dance,The Weekend,Can't Feel My Face,https://example.com/track",
-      'pop',
-    ),
-    {
-      line: "Dance,The Weekend,Can't Feel My Face,https://example.com/track",
-      changed: false,
-    },
-  );
-  assert.deepEqual(
-    fixDuplicateFilenameCsvField('# pop,Dance,Foster the People,https://example.com/track', 'pop'),
-    {
-      line: '# Dance,Foster the People,https://example.com/track',
-      changed: true,
-    },
-  );
+  assert.equal(genreFromQueueFile('pop.json'), 'Pop');
+  assert.equal(genreFromQueueFile('kids.json'), 'Kids');
+  assert.equal(genreFromQueueFile('folk rock.json'), 'Folk Rock');
+  assert.equal(genreFromQueueFile('folk-rock.json'), 'Folk Rock');
 
-  const sanitizeDir = await mkdtemp(path.join(tmpdir(), 'airfreyr-sanitize-test-'));
-  const sanitizedFile = path.join(sanitizeDir, 'pop.txt');
+  const migrateDir = await mkdtemp(path.join(tmpdir(), 'airfreyr-migrate-test-'));
+  const migrateTxt = path.join(migrateDir, 'pop.txt');
+  const migrateJson = path.join(migrateDir, 'pop.json');
   try {
     await writeFile(
-      sanitizedFile,
-      'pop,Dance,Foster the People,https://example.com/track\n',
+      migrateTxt,
+      'The Automatic,Monster,https://example.com/track\n',
       'utf8',
     );
-    const sanitizeServer = new QueueServer({
+    const migrateServer = new QueueServer({
       hostname: '127.0.0.1',
       port: await freePort(),
-      queueDir: sanitizeDir,
+      queueDir: migrateDir,
       projectConfig: {},
     });
-    await sanitizeServer.start();
-    assert.equal(
-      await readFile(sanitizedFile, 'utf8'),
-      'Dance,Foster the People,https://example.com/track\n',
-    );
-    await sanitizeServer.stop();
+    await migrateServer.start();
+    const migrated = parseQueueDocument(await readFile(migrateJson, 'utf8'));
+    assert.equal(migrated.entries.length, 1);
+    assert.equal(migrated.entries[0].artist, 'The Automatic');
+    assert.equal(migrated.entries[0].title, 'Monster');
+    await migrateServer.stop();
   } finally {
-    await rm(sanitizeDir, {recursive: true, force: true});
+    await rm(migrateDir, {recursive: true, force: true});
   }
 
   const queueDir = await mkdtemp(path.join(tmpdir(), 'airfreyr-queue-test-'));
-  const queueFile = path.join(queueDir, 'kids.txt');
+  const queueFile = path.join(queueDir, 'kids.json');
   let server;
 
   try {
-    await writeFile(
-      queueFile,
-      ['Kids,Artist,Title,https://example.com/active # note', '# Kids,Disabled,Old,https://example.com/disabled', ''].join('\n'),
-      'utf8',
-    );
+    const initialDocument = {
+      entries: [
+        {
+          artist: 'Artist',
+          title: 'Title',
+          url: 'https://example.com/active',
+          note: 'note',
+        },
+        {
+          artist: 'Disabled',
+          title: 'Old',
+          url: 'https://example.com/disabled',
+          disabled: true,
+        },
+      ],
+    };
+    await writeFile(queueFile, serializeQueueDocument(initialDocument), 'utf8');
     await writeFile(path.join(queueDir, 'ignored.md'), '# not a queue', 'utf8');
 
     const port = await freePort();
@@ -150,7 +141,7 @@ async function main() {
     assert.equal(typeof lists.json.version, 'string');
     assert.deepEqual(lists.json.lists, [
       {
-        file: 'kids.txt',
+        file: 'kids.json',
         filePath: queueFile,
         total: 2,
         active: 1,
@@ -158,7 +149,7 @@ async function main() {
       },
     ]);
 
-    const list = await request(port, 'GET', '/api/list?file=kids.txt');
+    const list = await request(port, 'GET', '/api/list?file=kids.json');
     assert.equal(list.status, 200);
     assert.equal(list.json.total, 2);
     assert.equal(list.json.entries[0].line, 1);
@@ -168,12 +159,12 @@ async function main() {
     assert.equal(list.json.entries[0].note, 'note');
     assert.equal(list.json.entries[1].disabled, true);
 
-    const traversal = await request(port, 'GET', '/api/list?file=../kids.txt');
+    const traversal = await request(port, 'GET', '/api/list?file=../kids.json');
     assert.equal(traversal.status, 400);
     assert.equal(traversal.json.ok, false);
 
     const retry = await request(port, 'POST', '/api/list/item/retry', {
-      file: 'kids.txt',
+      file: 'kids.json',
       line: 1,
     });
     assert.equal(retry.status, 200);
@@ -181,100 +172,120 @@ async function main() {
     assert.equal(retry.json.line, 1);
 
     const disabled = await request(port, 'POST', '/api/list/item', {
-      file: 'kids.txt',
+      file: 'kids.json',
       line: 1,
       action: 'disable',
     });
     assert.equal(disabled.status, 200);
     assert.equal(disabled.json.active, 0);
     assert.equal(disabled.json.disabled, 2);
-    assert.match(await readFile(queueFile, 'utf8'), /^# Kids,Artist,Title/);
+    const afterDisable = parseQueueDocument(await readFile(queueFile, 'utf8'));
+    assert.equal(afterDisable.entries[0].disabled, true);
 
     const deleted = await request(port, 'POST', '/api/list/item', {
-      file: 'kids.txt',
+      file: 'kids.json',
       line: 2,
       action: 'delete',
     });
     assert.equal(deleted.status, 200);
     assert.equal(deleted.json.entries.length, 1);
-    assert.doesNotMatch(await readFile(queueFile, 'utf8'), /Disabled/);
+    const afterDelete = parseQueueDocument(await readFile(queueFile, 'utf8'));
+    assert.equal(afterDelete.entries.length, 1);
+    assert.doesNotMatch(afterDelete.entries[0].artist, /Disabled/);
 
     const invalidAction = await request(port, 'POST', '/api/list/item', {
-      file: 'kids.txt',
+      file: 'kids.json',
       line: 1,
       action: 'enable',
     });
     assert.equal(invalidAction.status, 400);
     assert.equal(invalidAction.json.ok, false);
 
-    const created = await request(port, 'POST', '/api/list', {file: 'new-list.txt'});
+    const created = await request(port, 'POST', '/api/list', {file: 'new-list.json'});
     assert.equal(created.status, 201);
     assert.equal(created.json.ok, true);
-    assert.equal(created.json.file, 'new-list.txt');
+    assert.equal(created.json.file, 'new-list.json');
     assert.equal(created.json.total, 0);
-    assert.equal(await readFile(path.join(queueDir, 'new-list.txt'), 'utf8'), '');
+    assert.deepEqual(parseQueueDocument(await readFile(path.join(queueDir, 'new-list.json'), 'utf8')), {
+      entries: [],
+    });
 
-    const duplicate = await request(port, 'POST', '/api/list', {file: 'new-list.txt'});
+    const duplicate = await request(port, 'POST', '/api/list', {file: 'new-list.json'});
     assert.equal(duplicate.status, 400);
     assert.equal(duplicate.json.ok, false);
 
     const bulk = await request(port, 'POST', '/api/list/lines', {
-      file: 'kids.txt',
+      file: 'kids.json',
       lines: [
-        'Dance,LMFAO,https://www.youtube.com/watch?v=wyx6JDQCslE',
-        '# Kids,Disabled,Old,https://example.com/disabled',
+        'LMFAO,Sexy And I Know It,https://www.youtube.com/watch?v=wyx6JDQCslE',
+        '# Disabled,Old,https://example.com/disabled',
         '',
-        'Kids,Moana,Welcome,https://example.com/welcome',
+        'Moana,Welcome,https://example.com/welcome',
       ].join('\n'),
     });
     assert.equal(bulk.status, 201);
     assert.equal(bulk.json.ok, true);
     assert.equal(bulk.json.added, 3);
-    const bulkFile = await readFile(queueFile, 'utf8');
-    assert.match(bulkFile, /Kids,Dance,LMFAO/);
-    assert.match(bulkFile, /^# Kids,Disabled,Old/m);
-    assert.match(bulkFile, /Kids,Moana,Welcome/);
+    const bulkDocument = parseQueueDocument(await readFile(queueFile, 'utf8'));
+    assert.equal(bulkDocument.entries.length, 4);
+    assert.equal(bulkDocument.entries[1].artist, 'LMFAO');
+    assert.equal(bulkDocument.entries[2].disabled, true);
+    assert.equal(bulkDocument.entries[3].artist, 'Moana');
 
     const added = await request(port, 'POST', '/add', {
-      file: 'kids.txt',
+      file: 'kids.json',
       artist: 'Artist',
       title: 'Song',
       path: 'https://example.com/new-track',
     });
     assert.equal(added.status, 201);
-    assert.match(await readFile(queueFile, 'utf8'), /Kids,Artist,Song,https:\/\/example.com\/new-track/);
+    const afterAdd = parseQueueDocument(await readFile(queueFile, 'utf8'));
+    assert.equal(afterAdd.entries.at(-1).artist, 'Artist');
+    assert.equal(afterAdd.entries.at(-1).title, 'Song');
+    assert.equal(afterAdd.entries.at(-1).url, 'https://example.com/new-track');
 
     const bulkInvalid = await request(port, 'POST', '/api/list/lines', {
-      file: 'kids.txt',
+      file: 'kids.json',
       lines: 'Not,a,valid,line',
     });
     assert.equal(bulkInvalid.status, 400);
     assert.equal(bulkInvalid.json.ok, false);
 
     const renamed = await request(port, 'POST', '/api/list/rename', {
-      file: 'kids.txt',
-      newFile: 'folk rock.txt',
+      file: 'kids.json',
+      newFile: 'folk rock.json',
     });
     assert.equal(renamed.status, 200);
     assert.equal(renamed.json.ok, true);
-    assert.equal(renamed.json.from, 'kids.txt');
-    assert.equal(renamed.json.file, 'folk rock.txt');
-    const renamedPath = path.join(queueDir, 'folk rock.txt');
-    assert.match(await readFile(renamedPath, 'utf8'), /Kids,Artist/);
+    assert.equal(renamed.json.from, 'kids.json');
+    assert.equal(renamed.json.file, 'folk rock.json');
+    const renamedPath = path.join(queueDir, 'folk rock.json');
+    assert.equal(
+      parseQueueDocument(await readFile(renamedPath, 'utf8')).entries.length,
+      5,
+    );
 
     const renameMissing = await request(port, 'POST', '/api/list/rename', {
-      file: 'kids.txt',
-      newFile: 'missing.txt',
+      file: 'kids.json',
+      newFile: 'missing.json',
     });
     assert.equal(renameMissing.status, 400);
     assert.equal(renameMissing.json.ok, false);
 
     const retryMissing = await request(port, 'POST', '/api/list/item/retry', {
-      file: 'folk rock.txt',
+      file: 'folk rock.json',
       line: 999,
     });
     assert.equal(retryMissing.status, 400);
     assert.equal(retryMissing.json.ok, false);
+
+    const imported = importCsvText(
+      'LMFAO,Sexy And I Know It,https://example.com/track',
+      'pop.json',
+    );
+    assert.equal(imported.length, 1);
+    assert.equal(imported[0].artist, 'LMFAO');
+    assert.equal(imported[0].title, 'Sexy And I Know It');
   } finally {
     if (server) await server.stop();
     await rm(queueDir, {recursive: true, force: true});

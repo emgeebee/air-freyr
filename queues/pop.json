@@ -1,0 +1,16 @@
+{
+  "entries": [
+    {
+      "artist": "The Automatic",
+      "title": "Monster",
+      "url": "https://www.youtube.com/watch?v=o7X3LYGV_N8",
+      "disabled": false
+    },
+    {
+      "artist": "Dua Lipa",
+      "title": "One Kiss",
+      "url": "https://www.youtube.com/watch?v=DkeiKbqa02g&list=RDDkeiKbqa02g",
+      "disabled": false
+    }
+  ]
+}

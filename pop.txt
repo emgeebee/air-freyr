@@ -1,7 +1,0 @@
-Dance,Foster the People,https://www.youtube.com/watch?v=SDTZ7iX4vTQ&list=RDSDTZ7iX4vTQ&start_radio=1 # pumped up kicks
-Dance,Lorde,https://www.youtube.com/watch?v=LFasFq4GJYM&list=RDLFasFq4GJYM&start_radio=1 # royals
-Dance,Meghan Trainor,https://www.youtube.com/watch?v=7PCkvCPvDXk&list=RD7PCkvCPvDXk&start_radio=1 # all about the bass
-Pop,The Automatic,https://www.youtube.com/watch?v=o7X3LYGV_N8 # coming over the hill
-Dance,LMFAO,https://www.youtube.com/watch?v=wyx6JDQCslE&list=RDwyx6JDQCslE&start_radio=1 # lmfao
-Dance,The Weekend,Can't Feel My Face,https://www.youtube.com/watch?v=KEI4qSrkPAs
-

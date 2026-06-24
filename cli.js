@@ -55,6 +55,15 @@ import {
   pickBestAudioFormat,
   feedsHaveAudioStream,
 } from "./src/services/youtube.js";
+import {
+  activeDownloadEntries,
+  genreFromQueueFilename,
+  importCsvText,
+  parseCsvQueueLine,
+  parseQueueDocument,
+  stripQueueExtension,
+  toDownloadEntry,
+} from "./src/queue_format.js";
 
 const maybeStat = (path) => fs.stat(path).catch(() => false);
 
@@ -404,22 +413,6 @@ async function PROCESS_INPUT_FILE(input_arg, type, allowBinary = false, stat) {
   return input_arg;
 }
 
-function parseCsvLine(line) {
-  const parts = [];
-  let current = "";
-  let inQuotes = false;
-  for (let i = 0; i < line.length; i += 1) {
-    const ch = line[i];
-    if (ch === '"') inQuotes = !inQuotes;
-    else if (ch === "," && !inQuotes) {
-      parts.push(current.trim());
-      current = "";
-    } else current += ch;
-  }
-  parts.push(current.trim());
-  return parts;
-}
-
 function normalizeQuery(entry) {
   if (entry && typeof entry === "object" && entry.url) return entry;
   if (typeof entry === "string") return { url: entry };
@@ -431,58 +424,6 @@ function formatQueryLabel(entry) {
   if (genre || artist || title)
     return [genre, artist, title, url].filter(Boolean).join(", ");
   return url;
-}
-
-function titleCaseGenreStem(stem) {
-  return stem
-    .split(/[\s_-]+/)
-    .filter(Boolean)
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-    .join(" ");
-}
-
-function genreFromQueueFilename(inputPath) {
-  const stem = xpath.basename(String(inputPath).trim()).replace(/\.txt$/i, "");
-  if (!stem) return null;
-  return titleCaseGenreStem(stem);
-}
-
-function parseBatchCsvLine(line, fileGenre) {
-  const parts = parseCsvLine(line);
-  const urlIndex = parts.findIndex((part) => /^https?:\/\//i.test(part));
-  if (urlIndex < 0) {
-    if (parts.length === 1) return { url: parts[0] };
-    throw new Error(`Invalid CSV line (missing url): ${line}`);
-  }
-  const url = parts.slice(urlIndex).join(",").trim();
-  const fields = parts.slice(0, urlIndex);
-  let genre;
-  let artist;
-  let title;
-  if (fileGenre) {
-    genre = fileGenre;
-    if (fields.length >= 3) {
-      artist = fields[1];
-      title = fields.slice(2).join(",");
-    } else if (fields.length === 2) {
-      artist = fields[0];
-      title = fields[1];
-    } else if (fields.length === 1) {
-      artist = fields[0];
-      title = "";
-    } else throw new Error(`Invalid CSV line (missing artist): ${line}`);
-  } else {
-    genre = fields[0];
-    artist = fields[1];
-    title = fields.length > 2 ? fields.slice(2).join(",") : "";
-  }
-  if (!artist) throw new Error(`Invalid CSV line (missing artist): ${line}`);
-  return {
-    genre: genre || fileGenre,
-    artist,
-    title: title || "",
-    url,
-  };
 }
 
 function resolveBatchSingleTrackPaths(batchMeta, track, format) {
@@ -780,29 +721,59 @@ function printBatchIssues(logger, queryIssues, trackIssues) {
   logger.error("\x1b[31m========================================\x1b[0m");
 }
 
-function PARSE_INPUT_LINES(lines, fileGenre) {
-  return lines
-    .map((line) => line.toString().trim())
-    .filter((line) => !!line && /^(?!\s*#)/.test(line))
-    .map((line) => line.replace(/#.*$/, "").trim())
-    .filter(Boolean)
-    .map((line) => parseBatchCsvLine(line, fileGenre));
+function PARSE_INPUT_LINES(lines) {
+  const entries = [];
+  for (const [index, buffer] of lines.entries()) {
+    const entry = parseCsvQueueLine(buffer.toString(), index + 1, null, null);
+    if (entry) entries.push(toDownloadEntry(entry, entry.genre));
+  }
+  return entries;
+}
+
+async function readQueueInputEntries(filePath, text) {
+  const fileGenre = genreFromQueueFilename(filePath);
+  if (/\.json$/i.test(filePath)) {
+    return activeDownloadEntries(parseQueueDocument(text), fileGenre);
+  }
+  if (/\.txt$/i.test(filePath)) {
+    const jsonName = xpath.basename(filePath).replace(/\.txt$/i, ".json");
+    const document = { entries: importCsvText(text, jsonName) };
+    return activeDownloadEntries(document, fileGenre);
+  }
+  return PARSE_INPUT_LINES(text.split(/\r?\n/).filter(Boolean));
 }
 
 async function PROCESS_INPUT_ARG(input_arg) {
   if (!input_arg) return [];
-  const fileGenre =
-    input_arg !== "-" ? genreFromQueueFilename(input_arg) : null;
-  const inputSource =
-    input_arg === "-"
-      ? process.stdin
-      : createReadStream(await PROCESS_INPUT_FILE(input_arg, "Input", false));
+  if (input_arg === "-") {
+    const lines = await streamUtils
+      .collectBuffers(
+        process.stdin.pipe(streamUtils.buildSplitter(["\n", "\r\n"])),
+        {
+          max: 1048576,
+          timeout: 15000,
+        },
+      )
+      .catch((er) => {
+        if (er.code === 1)
+          throw new Error(`Input stream is beyond the maximum 1 MiB size limit`);
+        if (er.code === 2)
+          throw new Error(`Input stream read timed out after 15 seconds`);
+      });
+    return PARSE_INPUT_LINES(lines);
+  }
+
+  const filePath = await PROCESS_INPUT_FILE(input_arg, "Input", false);
+  const text = await fs.readFile(filePath, "utf8");
+  if (/\.(json|txt)$/i.test(filePath)) return readQueueInputEntries(filePath, text);
+
+  const fileGenre = genreFromQueueFilename(filePath);
   const lines = await streamUtils
     .collectBuffers(
-      inputSource.pipe(streamUtils.buildSplitter(["\n", "\r\n"])),
+      createReadStream(filePath).pipe(streamUtils.buildSplitter(["\n", "\r\n"])),
       {
-        max: 1048576, // 1 MiB size limit
-        timeout: 15000, // Timeout read op after 15 seconds
+        max: 1048576,
+        timeout: 15000,
       },
     )
     .catch((er) => {
@@ -811,7 +782,15 @@ async function PROCESS_INPUT_ARG(input_arg) {
       if (er.code === 2)
         throw new Error(`Input stream read timed out after 15 seconds`);
     });
-  return PARSE_INPUT_LINES(lines, fileGenre);
+  return lines
+    .map((line) => line.toString().trim())
+    .filter((line) => !!line && /^(?!\s*#)/.test(line))
+    .map((line) => line.replace(/#.*$/, "").trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const entry = parseCsvQueueLine(line, index + 1, fileGenre, null);
+      return toDownloadEntry(entry, fileGenre);
+    });
 }
 
 async function PROCESS_INPUT_LINE(input_arg, lineNumber) {
@@ -824,6 +803,18 @@ async function PROCESS_INPUT_LINE(input_arg, lineNumber) {
   if (!Number.isInteger(line) || line < 1)
     throw new Error("`--line` must be a positive integer");
   const text = await fs.readFile(filePath, "utf8");
+  const fileGenre = genreFromQueueFilename(filePath);
+
+  if (/\.json$/i.test(filePath)) {
+    const document = parseQueueDocument(text);
+    const index = line - 1;
+    if (index >= document.entries.length)
+      throw new Error(`line ${line} does not exist`);
+    const entry = document.entries[index];
+    if (entry.disabled) throw new Error(`line ${line} is disabled`);
+    return [toDownloadEntry(entry, fileGenre)];
+  }
+
   const lines = text.split(/\r?\n/);
   if (/\r?\n$/.test(text)) lines.pop();
   const index = line - 1;
@@ -831,9 +822,10 @@ async function PROCESS_INPUT_LINE(input_arg, lineNumber) {
   const rawLine = lines[index];
   if (!rawLine.trim()) throw new Error(`line ${line} is empty`);
   if (/^\s*#/.test(rawLine)) throw new Error(`line ${line} is disabled`);
-  const fileGenre = genreFromQueueFilename(filePath);
-  const content = rawLine.replace(/^\s*#\s?/, "").replace(/#.*$/, "").trim();
-  return [parseBatchCsvLine(content, fileGenre)];
+  const fileStem = stripQueueExtension(xpath.basename(filePath));
+  const entry = parseCsvQueueLine(rawLine, line, fileGenre, fileStem);
+  if (!entry) throw new Error(`line ${line} is empty`);
+  return [toDownloadEntry(entry, fileGenre)];
 }
 
 function PROCESS_IMAGE_SIZE(value) {
@@ -3385,7 +3377,7 @@ function prepCli(packageJson) {
     .option("-p, --port <PORT>", "port to listen on (conf: serve.port)")
     .option(
       "-q, --queue-dir <DIR>",
-      "directory for queue .txt files (conf: serve.queueDir, env: AIRFREYR_QUEUE_DIR)",
+      "directory for queue .json files (conf: serve.queueDir, env: AIRFREYR_QUEUE_DIR)",
     )
     .option(
       "-D, --output-dir <DIR>",
@@ -3427,7 +3419,7 @@ function prepCli(packageJson) {
       );
       console.log("");
       console.log("Environment:");
-      console.log("  AIRFREYR_QUEUE_DIR   directory for queue .txt files");
+      console.log("  AIRFREYR_QUEUE_DIR   directory for queue .json files");
       console.log("  AIRFREYR_OUTPUT_DIR  directory for downloaded tracks");
       console.log("  AIRFREYR_PORT        listen port");
       console.log("  AIRFREYR_HOSTNAME    bind address");
@@ -3438,9 +3430,9 @@ function prepCli(packageJson) {
       console.log("API:");
       console.log("  POST /add");
       console.log(
-        '    body: {"file":"arlo.txt","genre":"Kids","artist":"Moana","title":"You\'re Welcome","path":"https://..."}',
+        '    body: {"file":"kids.json","genre":"Kids","artist":"Moana","title":"You\'re Welcome","path":"https://..."}',
       );
-      console.log("  GET /status?file=arlo.txt");
+      console.log("  GET /status?file=kids.json");
       console.log("  GET /health");
     });
 

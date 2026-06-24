@@ -1,6 +1,6 @@
 {
   "name": "@emgeebee/airfreyr",
-  "version": "1.0.20",
+  "version": "1.0.21",
   "description": "Music downloader with an HTTP queue server for remote track requests",
   "exports": "./src/freyr.js",
   "type": "module",
@@ -17,8 +17,8 @@
     "start": "node ./cli.js serve -q ./queues -D ./music -o conf.json -p 3001",
     "dev": "node ./cli.js",
     "serve": "node ./cli.js serve",
-    "arlo": "node ./cli.js -i arlo.txt",
-    "pop": "node ./cli.js -i pop.txt",
+    "arlo": "node ./cli.js -i queues/Kids.json",
+    "pop": "node ./cli.js -i queues/pop.json",
     "test": "node test/queue_server.js"
   },
   "files": [

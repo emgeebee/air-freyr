@@ -37,7 +37,7 @@ Precedence: CLI flags → environment variables → `conf.json` → defaults.
 
 | Flag | Env | `conf.json` | Purpose |
 | --- | --- | --- | --- |
-| `-q, --queue-dir <DIR>` | `AIRFREYR_QUEUE_DIR` | `serve.queueDir` | Queue `.txt` files directory |
+| `-q, --queue-dir <DIR>` | `AIRFREYR_QUEUE_DIR` | `serve.queueDir` | Queue `.json` files directory |
 | `-D, --output-dir <DIR>` | `AIRFREYR_OUTPUT_DIR` | `dirs.output` | Download output directory |
 | `-p, --port <PORT>` | `AIRFREYR_PORT` | `serve.port` | Listen port (default: `3797`) |
 | `-H, --hostname <HOST>` | `AIRFREYR_HOSTNAME` | `serve.hostname` | Bind address |
@@ -67,7 +67,7 @@ All responses include `"version"` (the running `@emgeebee/airfreyr` package vers
 
 ```json
 {
-  "file": "arlo.txt",
+  "file": "kids.json",
   "genre": "Kids",
   "artist": "Moana",
   "title": "You're Welcome",
@@ -80,10 +80,10 @@ All responses include `"version"` (the running `@emgeebee/airfreyr` package vers
 - Existing tracks in the file are skipped; only new lines are downloaded
 - If a download is already running for that file, another run is queued when it finishes
 
-**GET `/status?file=arlo.txt`** — check whether a download is in progress (includes `lastError` if the last run failed)
+**GET `/status?file=kids.json`** — check whether a download is in progress (includes `lastError` if the last run failed)
 
 ```bash
-curl 'http://<nas-ip>:3797/status?file=arlo.txt'
+curl 'http://<nas-ip>:3797/status?file=kids.json'
 ```
 
 Example when a download failed:
@@ -92,7 +92,7 @@ Example when a download failed:
 {
   "version": "1.0.1",
   "ok": true,
-  "file": "arlo.txt",
+  "file": "kids.json",
   "download": {
     "running": false,
     "pending": false,
@@ -111,7 +111,7 @@ If `lastError` is set, check container logs for detail: `sudo docker logs --tail
 ```bash
 curl -X POST http://localhost:3797/add \
   -H 'Content-Type: application/json' \
-  -d '{"file":"arlo.txt","genre":"Kids","artist":"Moana","title":"You'\''re Welcome","path":"https://www.youtube.com/watch?v=G8QjumNNNBY"}'
+  -d '{"file":"kids.json","genre":"Kids","artist":"Moana","title":"You'\''re Welcome","path":"https://www.youtube.com/watch?v=G8QjumNNNBY"}'
 ```
 
 ## Batch downloads
@@ -119,21 +119,36 @@ curl -X POST http://localhost:3797/add \
 Download tracks listed in a queue file:
 
 ```bash
-airfreyr -i arlo.txt
-airfreyr -i arlo.txt -d ./music   # custom output directory
+airfreyr -i kids.json
+airfreyr -i kids.json -d ./music   # custom output directory
 ```
 
 ### Queue file format
 
-One track per line as CSV: `genre,artist,title,url`
+Queue files are JSON with an `entries` array. Each entry has `artist`, `title`, `url`, and optional `disabled`, `note`, and `genre` (when different from the list name).
 
-`title` is optional (legacy 3-column rows: `genre,artist,url`). Lines starting with `#` are comments.
-
-```text
-Kids,Moana,You're Welcome,https://www.youtube.com/watch?v=G8QjumNNNBY
-Kids,Peppa Pig,Jumping in Muddy Puddles,https://www.youtube.com/watch?v=t7dTdE8Aqtw
-Dance,LMFAO,,https://www.youtube.com/watch?v=wyx6JDQCslE
+```json
+{
+  "entries": [
+    {
+      "artist": "Moana",
+      "title": "You're Welcome",
+      "url": "https://www.youtube.com/watch?v=G8QjumNNNBY"
+    },
+    {
+      "artist": "Peppa Pig",
+      "title": "Jumping in Muddy Puddles",
+      "url": "https://www.youtube.com/watch?v=t7dTdE8Aqtw",
+      "disabled": true,
+      "note": "already have this"
+    }
+  ]
+}
 ```
+
+Genre defaults from the filename: `kids.json` → Kids, `folk rock.json` → Folk Rock.
+
+The queue UI and API still accept CSV lines for bulk paste (`artist,title,url`). Legacy `.txt` CSV files are migrated to `.json` automatically when the server starts.
 
 Files are organised as `<output>/<genre>/youtube/<artist> - <title>.<format>`.
 
@@ -141,7 +156,7 @@ Files are organised as `<output>/<genre>/youtube/<artist> - <title>.<format>`.
 
 ```bash
 airfreyr <url-or-uri>              # download a single track
-airfreyr -i queue.txt              # batch download from file
+airfreyr -i queues/kids.json         # batch download from file
 airfreyr serve                     # start the queue server
 airfreyr urify <url>               # convert URLs to service URIs
 airfreyr --help                    # full options
@@ -191,7 +206,7 @@ docker compose -f compose.alpine.yml up -d
 
 This uses `node:20-alpine` directly. Python is installed on first start (`apk add python3 bash`), then the entrypoint runs `npx`.
 
-Queue files go in `docker/queues/` (e.g. `arlo.txt`). Downloads land in `docker/music/`.
+Queue files go in `docker/queues/` (e.g. `kids.json`). Downloads land in `docker/music/`.
 
 ### `docker run` (without compose)
 
@@ -220,7 +235,7 @@ Use [`docker/synology-compose.yml`](docker/synology-compose.yml) and [`docker/co
 In **File Station**, create:
 
 ```text
-/volume1/docker/airfreyr/queues    ← queue .txt files (arlo.txt, pop.txt, …)
+/volume1/docker/airfreyr/queues    ← queue .json files (kids.json, pop.json, …)
 /volume1/docker/airfreyr/music     ← downloaded tracks
 /volume1/docker/airfreyr/config    ← conf.json
 ```
@@ -248,7 +263,7 @@ Edit paths in `docker-compose.yml` if not using `volume1`. Put queue files in `q
 
 | NAS folder | Container path | Purpose |
 | --- | --- | --- |
-| `/volume1/docker/airfreyr/queues` | `/data/queues` | Queue `.txt` files |
+| `/volume1/docker/airfreyr/queues` | `/data/queues` | Queue `.json` files |
 | `/volume1/docker/airfreyr/music` | `/data/music` | Downloaded music |
 | `/volume1/docker/airfreyr/config` | `/data/config` | `conf.json` (+ saved auth after first run) |
 
@@ -328,7 +343,7 @@ sudo docker logs airfreyr 2>&1
 | --- | --- | --- |
 | `AIRFREYR_HOSTNAME` | `0.0.0.0` | Bind address (use `0.0.0.0` in Docker) |
 | `AIRFREYR_PORT` | `3797` | HTTP port |
-| `AIRFREYR_QUEUE_DIR` | `/data/queues` | Queue `.txt` directory |
+| `AIRFREYR_QUEUE_DIR` | `/data/queues` | Queue `.json` directory |
 | `AIRFREYR_OUTPUT_DIR` | `/data/music` | Download output directory |
 | `AIRFREYR_CONFIG` | `/data/config/conf.json` | Config file for download runs |
 | `AIRFREYR_REFRESH_HOURS` | `3` | Restart interval to pull latest from npm |
@@ -354,7 +369,7 @@ curl http://localhost:3797/health
 
 curl -X POST http://localhost:3797/add \
   -H 'Content-Type: application/json' \
-  -d '{"file":"arlo.txt","genre":"Kids","artist":"Moana","title":"You'\''re Welcome","path":"https://www.youtube.com/watch?v=G8QjumNNNBY"}'
+  -d '{"file":"kids.json","genre":"Kids","artist":"Moana","title":"You'\''re Welcome","path":"https://www.youtube.com/watch?v=G8QjumNNNBY"}'
 ```
 
 ## License

@@ -23,7 +23,7 @@ services:
     image: node:20-alpine
     restart: unless-stopped
     ports:
-      - "3797:3797"
+      - "3799:3797"
     environment:
       AIRFREYR_REFRESH_HOURS: "3"
       AIRFREYR_MIRROR_DIRS: "/data/cds-alac,/data/cds-mp3"
@@ -47,7 +47,7 @@ services:
           echo "[airfreyr] starting $$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           rm -rf /root/.npm/_npx 2>/dev/null || true
           npx --yes @emgeebee/airfreyr@latest serve --no-logo --no-header \
-            -H 0.0.0.0 -p 3797 \
+            -H 0.0.0.0 -p 3799 \
             -q /data/queues -D /data/music \
             -o /data/config/conf.json &
           PID=$$!
