@@ -566,28 +566,47 @@ async function finalizeMirroredFile(filePath, dirPath) {
   }
 }
 
-async function mirrorDownloadedTrack(sourcePath, mirrorRoots, batchMeta, track, format) {
+async function filterWritableMirrorRoots(mirrorRoots, onWarn = () => {}) {
+  const writable = [];
+  for (const root of mirrorRoots) {
+    try {
+      await assertDirWritable(root, "Mirror directory");
+      writable.push(root);
+    } catch (err) {
+      onWarn(err.message);
+    }
+  }
+  return writable;
+}
+
+async function mirrorDownloadedTrack(
+  sourcePath,
+  mirrorRoots,
+  batchMeta,
+  track,
+  format,
+  { overwrite = true, onWarn = () => {} } = {},
+) {
   const paths = resolveCompilationMirrorPaths(batchMeta, track, format);
   if (!paths) return [];
   const copied = [];
   const source = xpath.resolve(sourcePath);
   for (const root of mirrorRoots) {
     const destDir = xpath.join(root, paths.trackPath);
-    await assertDirWritable(destDir, "Mirror directory");
     const dest = xpath.join(destDir, paths.outFileName);
     if (xpath.resolve(dest) === source) continue;
+    if (!overwrite && (await maybeStat(dest))) continue;
     try {
+      await assertDirWritable(destDir, "Mirror directory");
       await fs.copyFile(sourcePath, dest);
       await finalizeMirroredFile(dest, destDir);
       copied.push(dest);
     } catch (err) {
-      if (err?.code === "EACCES" || err?.code === "EPERM") {
-        throw new Error(
-          `Mirror copy failed (permission denied): ${dest}. Ensure [${root}] is writable by the container process.`,
-          { cause: err },
-        );
-      }
-      throw err;
+      const detail =
+        err?.code === "EACCES" || err?.code === "EPERM"
+          ? `permission denied for [${dest}]`
+          : err?.message || String(err);
+      onWarn(`Mirror copy skipped (${detail})`);
     }
   }
   return copied;
@@ -1343,16 +1362,15 @@ async function init(packageJson, queries, options) {
   if (!CHECK_DIRECTORIES.includes(BASE_DIRECTORY))
     CHECK_DIRECTORIES.unshift(BASE_DIRECTORY);
 
-  const MIRROR_ROOTS = collectMirrorRoots(Config, BASE_DIRECTORY);
-
-  for (const mirrorRoot of MIRROR_ROOTS) {
-    try {
-      await assertDirWritable(mirrorRoot, "Mirror directory");
-    } catch (err) {
-      stackLogger.error(`\x1b[31m[!]\x1b[0m ${err.message}`);
-      process.exit(5);
-    }
-  }
+  const configuredMirrorRoots = collectMirrorRoots(Config, BASE_DIRECTORY);
+  const MIRROR_ROOTS = await filterWritableMirrorRoots(
+    configuredMirrorRoots,
+    (msg) => stackLogger.warn(`\x1b[33m[!]\x1b[0m ${msg}`),
+  );
+  if (configuredMirrorRoots.length && !MIRROR_ROOTS.length)
+    stackLogger.warn(
+      `\x1b[33m[!]\x1b[0m No writable mirror directories — files will only be saved under [${BASE_DIRECTORY}]`,
+    );
 
   Config.dirs.cache.path =
     Config.dirs.cache.path === "<tmp>"
@@ -2044,7 +2062,11 @@ async function init(packageJson, queries, options) {
               meta.batchMeta,
               track,
               options.format,
-            ).catch((err) => Promise.reject({ err, [symbols.errorCode]: 11 }))
+              {
+                onWarn: (msg) =>
+                  stackLogger.warn(`\x1b[33m[!]\x1b[0m ${msg}`),
+              },
+            )
           : [];
       return {
         wroteImage,
@@ -2735,54 +2757,69 @@ async function init(packageJson, queries, options) {
               batchPaths.trackPath,
               batchPaths.outFileName,
             );
+            await ensureBatchTrackDirectories(
+              BASE_DIRECTORY,
+              MIRROR_ROOTS,
+              batchMeta,
+              { name: batchMeta.title || batchMeta.artist },
+              options.format,
+            );
+            const sourcePath =
+              fileExistsIn.find(
+                (path) => xpath.resolve(path) === xpath.resolve(primaryPath),
+              ) || fileExistsIn[0];
+            const mirroredPaths = MIRROR_ROOTS.length
+              ? await mirrorDownloadedTrack(
+                  sourcePath,
+                  MIRROR_ROOTS,
+                  batchMeta,
+                  { name: batchMeta.title || batchMeta.artist },
+                  options.format,
+                  {
+                    overwrite: !!options.remirror,
+                    onWarn: (msg) =>
+                      queryLogger.log(`\x1b[33m[!] ${msg}\x1b[0m`),
+                  },
+                )
+              : [];
             if (options.remirror) {
-              await ensureBatchTrackDirectories(
-                BASE_DIRECTORY,
-                MIRROR_ROOTS,
-                batchMeta,
-                { name: batchMeta.title || batchMeta.artist },
-                options.format,
-              );
-              const sourcePath =
-                fileExistsIn.find(
-                  (path) => xpath.resolve(path) === xpath.resolve(primaryPath),
-                ) || fileExistsIn[0];
-              const mirroredPaths = await mirrorDownloadedTrack(
-                sourcePath,
-                MIRROR_ROOTS,
-                batchMeta,
-                { name: batchMeta.title || batchMeta.artist },
-                options.format,
-              );
               queryLogger.log(
                 `\x1b[33m[\u00bb] Already exists — re-mirroring copies\x1b[0m`,
               );
+            } else if (mirroredPaths.length) {
               queryLogger.log(
-                `\x1b[33m    \u2192 ${xpath.resolve(sourcePath)}\x1b[0m`,
+                `\x1b[33m[\u00bb] Already exists — synced ${mirroredPaths.length} missing mirror copy/copies\x1b[0m`,
               );
-              if (mirroredPaths.length)
-                queryLogger.log(
-                  `\x1b[33m    mirrored: ${mirroredPaths.map((path) => xpath.resolve(path)).join(", ")}\x1b[0m`,
-                );
-              return [
-                {
-                  meta: {
-                    trackName: batchPaths.trackBaseName,
-                    outFile: { path: primaryPath },
-                  },
-                  [symbols.errorCode]: 0,
-                  skip_reason: "remirrored",
-                  postprocess: { mirroredPaths },
-                },
-              ];
+            } else {
+              queryLogger.log(
+                `\x1b[33m[\u00bb] Already exists — skipping download\x1b[0m`,
+              );
             }
             queryLogger.log(
-              `\x1b[33m[\u00bb] Already exists — skipping download\x1b[0m`,
+              `\x1b[33m    \u2192 ${xpath.resolve(sourcePath)}\x1b[0m`,
             );
-            queryLogger.log(
-              `\x1b[33m    \u2192 ${xpath.resolve(fileExistsIn[0])}\x1b[0m`,
-            );
-            return [buildExistsSkipStat(batchPaths, BASE_DIRECTORY, fileExistsIn)];
+            if (mirroredPaths.length)
+              queryLogger.log(
+                `\x1b[33m    mirrored: ${mirroredPaths.map((path) => xpath.resolve(path)).join(", ")}\x1b[0m`,
+              );
+            return [
+              {
+                meta: {
+                  trackName: batchPaths.trackBaseName,
+                  outFile: { path: primaryPath },
+                },
+                [symbols.errorCode]: 0,
+                skip_reason: options.remirror
+                  ? "remirrored"
+                  : mirroredPaths.length
+                    ? "mirrored"
+                    : "exists",
+                postprocess: mirroredPaths.length ? { mirroredPaths } : undefined,
+                complete: fileExistsIn.some(
+                  (path) => xpath.resolve(path) === xpath.resolve(primaryPath),
+                ),
+              },
+            ];
           }
         }
       }
@@ -2888,7 +2925,9 @@ async function init(packageJson, queries, options) {
                   ? "\x1b[33malready exists\x1b[0m"
                   : trackStat.skip_reason === "remirrored"
                     ? "\x1b[33mre-mirrored\x1b[0m"
-                  : `skipped: ${trackStat.skip_reason}`;
+                    : trackStat.skip_reason === "mirrored"
+                      ? "\x1b[33mmirrored missing copies\x1b[0m"
+                      : `skipped: ${trackStat.skip_reason}`;
               embedLogger.log(
                 `\u2022 [\u00bb] ${trackStat.meta.trackName} (${skipNote}) → ${xpath.resolve(trackStat.meta.outFile.path)}${
                   trackStat.postprocess?.mirroredPaths?.length

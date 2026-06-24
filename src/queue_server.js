@@ -1542,7 +1542,11 @@ export default class QueueServer {
 
     const mirrorRoots = collectMirrorRoots(projectConfig, this.#opts.outputDir);
     for (const mirrorRoot of mirrorRoots) {
-      await assertWritableDir(mirrorRoot, 'mirror directory');
+      try {
+        await assertWritableDir(mirrorRoot, 'mirror directory');
+      } catch (err) {
+        console.warn(`[airfreyr serve] ${err.message}`);
+      }
     }
 
     try {
