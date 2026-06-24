@@ -218,6 +218,29 @@ async function readQueueFile(dataDir, file) {
   };
 }
 
+function normalizeQueueFileName(file) {
+  if (!file || typeof file !== 'string') throw new Error('`file` is required');
+  const trimmed = file.trim();
+  if (!trimmed.endsWith('.txt')) throw new Error('`file` must end with .txt');
+  if (path.basename(trimmed) !== trimmed) throw new Error('`file` must be a filename only');
+  if (trimmed === '.txt') throw new Error('invalid `file` name');
+  return trimmed;
+}
+
+async function createQueueFile(dataDir, file) {
+  const name = normalizeQueueFileName(file);
+  const filePath = resolveQueueFile(dataDir, name);
+  try {
+    await access(filePath, fsConstants.F_OK);
+    throw new Error('`file` already exists');
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  await mkdir(path.dirname(filePath), {recursive: true});
+  await writeFile(filePath, '', 'utf8');
+  return readQueueFile(dataDir, name);
+}
+
 async function updateQueueFileItem(dataDir, file, line, action) {
   const filePath = resolveQueueFile(dataDir, file);
   const lineNumber = Number.parseInt(line, 10);
@@ -314,7 +337,7 @@ class FileDownloadScheduler {
   }
 }
 
-function queueUiHtml() {
+function queueUiHtml(version) {
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -441,6 +464,29 @@ function queueUiHtml() {
       font-size: 0.75rem;
       vertical-align: middle;
     }
+    .version {
+      display: inline-block;
+      margin-left: 8px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 2px 8px;
+      color: var(--accent);
+      font-size: 0.75rem;
+      font-weight: 600;
+      vertical-align: middle;
+    }
+    .header-actions, .panel-head-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+    .panel-head-actions { flex-shrink: 0; }
+    button.primary {
+      border-color: rgba(77, 213, 153, 0.45);
+      background: rgba(77, 213, 153, 0.14);
+    }
+    button.primary:hover { border-color: var(--accent); }
     .error {
       margin-bottom: 16px;
       border: 1px solid rgba(255, 107, 107, 0.6);
@@ -460,17 +506,22 @@ function queueUiHtml() {
   <main>
     <header>
       <div>
-        <h1>AirFreyr Queues</h1>
+        <h1>AirFreyr Queues <span id="version" class="version">v${version}</span></h1>
         <p>View queue lists, comment out songs, or remove songs from a list.</p>
       </div>
-      <button id="refresh" type="button">Refresh</button>
+      <div class="header-actions">
+        <button id="refresh" type="button">Refresh</button>
+      </div>
     </header>
     <div id="error" class="error" hidden></div>
     <section class="layout">
       <aside class="panel">
         <div class="panel-head">
           <h2>Lists</h2>
-          <span id="list-count" class="meta"></span>
+          <div class="panel-head-actions">
+            <span id="list-count" class="meta"></span>
+            <button id="new-list" type="button" class="primary">New list</button>
+          </div>
         </div>
         <div id="lists"></div>
       </aside>
@@ -493,9 +544,14 @@ function queueUiHtml() {
     var listCountEl = document.getElementById('list-count');
     var songsTitleEl = document.getElementById('songs-title');
     var songsCountEl = document.getElementById('songs-count');
+    var versionEl = document.getElementById('version');
 
     function text(value) {
       return value == null ? '' : String(value);
+    }
+
+    function setVersion(version) {
+      if (version) versionEl.textContent = 'v' + version;
     }
 
     function setError(message) {
@@ -507,6 +563,7 @@ function queueUiHtml() {
       return fetch(url, options).then(function(res) {
         return res.json().then(function(body) {
           if (!res.ok || body.ok === false) throw new Error(body.error || 'Request failed');
+          if (body.version) setVersion(body.version);
           return body;
         });
       });
@@ -651,7 +708,33 @@ function queueUiHtml() {
         });
     }
 
+    function createList() {
+      var input = window.prompt('New list filename (must end with .txt):', 'queue.txt');
+      if (input == null) return;
+      var file = input.trim();
+      if (!file) {
+        setError('List filename is required');
+        return;
+      }
+      if (!/\\.txt$/i.test(file)) file += '.txt';
+      setError('');
+      return requestJson('/api/list', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({file: file}),
+      })
+        .then(function(body) {
+          return refreshLists().then(function() {
+            return loadList(body.file);
+          });
+        })
+        .catch(function(err) {
+          setError(err.message);
+        });
+    }
+
     document.getElementById('refresh').addEventListener('click', refreshLists);
+    document.getElementById('new-list').addEventListener('click', createList);
     refreshLists();
   </script>
 </body>
@@ -737,7 +820,7 @@ export default class QueueServer {
     const app = express().use(cors()).use(express.json({limit: '64kb'}));
 
     app.get('/', (_req, res) => {
-      res.type('html').send(queueUiHtml());
+      res.type('html').send(queueUiHtml(VERSION));
     });
 
     app.get('/health', (_req, res) => {
@@ -761,6 +844,19 @@ export default class QueueServer {
     app.get('/api/list', async (req, res) => {
       try {
         res.json(apiJson({ok: true, ...(await readQueueFile(this.#opts.queueDir, req.query.file))}));
+      } catch (err) {
+        apiError(res, err);
+      }
+    });
+
+    app.post('/api/list', async (req, res) => {
+      try {
+        res.status(201).json(
+          apiJson({
+            ok: true,
+            ...(await createQueueFile(this.#opts.queueDir, req.body.file)),
+          }),
+        );
       } catch (err) {
         apiError(res, err);
       }

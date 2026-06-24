@@ -81,10 +81,12 @@ async function main() {
     const root = await request(port, 'GET', '/');
     assert.equal(root.status, 200);
     assert.match(root.text, /AirFreyr Queues/);
+    assert.match(root.text, /id="version"/);
 
     const lists = await request(port, 'GET', '/api/lists');
     assert.equal(lists.status, 200);
     assert.equal(lists.json.ok, true);
+    assert.equal(typeof lists.json.version, 'string');
     assert.deepEqual(lists.json.lists, [
       {
         file: 'kids.txt',
@@ -135,6 +137,17 @@ async function main() {
     });
     assert.equal(invalidAction.status, 400);
     assert.equal(invalidAction.json.ok, false);
+
+    const created = await request(port, 'POST', '/api/list', {file: 'new-list.txt'});
+    assert.equal(created.status, 201);
+    assert.equal(created.json.ok, true);
+    assert.equal(created.json.file, 'new-list.txt');
+    assert.equal(created.json.total, 0);
+    assert.equal(await readFile(path.join(queueDir, 'new-list.txt'), 'utf8'), '');
+
+    const duplicate = await request(port, 'POST', '/api/list', {file: 'new-list.txt'});
+    assert.equal(duplicate.status, 400);
+    assert.equal(duplicate.json.ok, false);
   } finally {
     if (server) await server.stop();
     await rm(queueDir, {recursive: true, force: true});
