@@ -1367,9 +1367,9 @@ async function init(packageJson, queries, options) {
     configuredMirrorRoots,
     (msg) => stackLogger.warn(`\x1b[33m[!]\x1b[0m ${msg}`),
   );
-  if (configuredMirrorRoots.length && !MIRROR_ROOTS.length)
-    stackLogger.warn(
-      `\x1b[33m[!]\x1b[0m No writable mirror directories — files will only be saved under [${BASE_DIRECTORY}]`,
+  if (configuredMirrorRoots.length)
+    stackLogger.log(
+      ` [\u2022] Mirror roots: [${MIRROR_ROOTS.length ? MIRROR_ROOTS.join(", ") : "(none writable)"}]`,
     );
 
   Config.dirs.cache.path =
@@ -2984,6 +2984,14 @@ async function init(packageJson, queries, options) {
     );
   const finalStats = trackStats.reduce(
     (total, current) => {
+      if (current.postprocess?.mirroredPaths?.length)
+        total.mirrored += current.postprocess.mirroredPaths.length;
+      if (
+        current.skip_reason === "exists" ||
+        current.skip_reason === "mirrored" ||
+        current.skip_reason === "remirrored"
+      )
+        total.existing += 1;
       if (current.postprocess && current.postprocess.finalSize) {
         total.outSize += current.postprocess.finalSize;
       }
@@ -3015,6 +3023,8 @@ async function init(packageJson, queries, options) {
       new: 0,
       failed: 0,
       skipped: 0,
+      existing: 0,
+      mirrored: 0,
     },
   );
   if (options.stats) {
@@ -3032,6 +3042,9 @@ async function init(packageJson, queries, options) {
       `     \u00bb Skipped: [${prePadNum(finalStats.skipped, 10)}]`,
     );
     stackLogger.log(
+      `     \u00bb Existing: [${prePadNum(finalStats.existing, 10)}]`,
+    );
+    stackLogger.log(
       `     \u2713 Passed:  [${prePadNum(finalStats.passed, 10)}]${
         finalStats.passed > finalStats.new
           ? ` (new: ${prePadNum(finalStats.new, 10)})`
@@ -3040,6 +3053,9 @@ async function init(packageJson, queries, options) {
     );
     stackLogger.log(
       `     \u2715 Failed:  [${prePadNum(finalStats.failed, 10)}]`,
+    );
+    stackLogger.log(
+      `     \u21c4 Mirrored: [${prePadNum(finalStats.mirrored, 10)}]`,
     );
     stackLogger.log(` [\u2022] Output directory: [${BASE_DIRECTORY}]`);
     stackLogger.log(
@@ -3051,9 +3067,24 @@ async function init(packageJson, queries, options) {
     stackLogger.log(`     \u266b Media: ${xbytes(finalStats.mediaSize)}`);
     stackLogger.log(`     \u27a4 Album Art: ${xbytes(finalStats.imageSize)}`);
     stackLogger.log(` [\u2022] Output bitrate: ${options.bitrate}`);
+    if (totalQueries.length === 0)
+      stackLogger.warn(
+        "[!] No queue lines were processed — is the file empty or all commented out?",
+      );
+    else if (trackStats.length === 0)
+      stackLogger.warn(
+        "[!] No tracks were processed — see Not Downloaded section below",
+      );
+    else if (finalStats.outSize === 0 && finalStats.failed === 0)
+      stackLogger.log(
+        "[\u2022] No new audio was written (existing files were skipped and/or mirrored)",
+      );
+    stackLogger.log(
+      `[airfreyr] batch: queries=${totalQueries.length} tracks=${trackStats.length} existing=${finalStats.existing} passed=${finalStats.passed} skipped=${finalStats.skipped} failed=${finalStats.failed} mirrored=${finalStats.mirrored} out=${xbytes(finalStats.outSize)}`,
+    );
     stackLogger.log("===============================");
   }
-  if (totalQueries.length > 1)
+  if (queryIssues.length || collectTrackIssues(trackStats).length)
     printBatchIssues(
       stackLogger,
       queryIssues,

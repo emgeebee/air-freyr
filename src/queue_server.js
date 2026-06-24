@@ -28,6 +28,19 @@ function tailLines(text, count = 4) {
     .join(' | ');
 }
 
+function summarizeDownloadLog(output) {
+  const text = stripAnsi(output);
+  const batchLine = text
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .find(line => line.includes('[airfreyr] batch:'));
+  if (batchLine) return batchLine.replace(/^.*\[airfreyr\]\s*batch:\s*/i, '');
+  const lines = text.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const statsIndex = lines.findIndex(line => line.includes('============ Stats ============'));
+  if (statsIndex >= 0) return lines.slice(statsIndex).join(' | ');
+  return tailLines(output, 12);
+}
+
 async function assertReadable(filePath, label) {
   try {
     await access(filePath, fsConstants.R_OK);
@@ -1500,7 +1513,7 @@ export default class QueueServer {
       child.on('error', reject);
       child.on('close', code => {
         this.#scheduler.setExitCode(filePath, code);
-        const detail = tailLines(output, 8);
+        const detail = summarizeDownloadLog(output);
         this.#scheduler.setLastLog(filePath, detail || null);
         if (code === 0) resolve();
         else {
