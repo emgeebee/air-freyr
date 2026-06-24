@@ -75,6 +75,7 @@ export async function loadProjectConfig(configPath = DEFAULT_CONF_PATH) {
 }
 
 export function collectMirrorRoots(projectConfig = {}, outputDir = null) {
+  const base = path.resolve(outputDir || '.');
   const dirs = projectConfig.dirs || {};
   return Array.from(
     new Set(
@@ -84,8 +85,9 @@ export function collectMirrorRoots(projectConfig = {}, outputDir = null) {
           .split(',')
           .map(dir => dir.trim())
           .filter(Boolean),
-        ...(dirs.mirrorToOutput && outputDir ? [outputDir] : []),
-      ].map(dir => path.resolve(dir)),
+      ]
+        .map(dir => path.resolve(dir))
+        .filter(dir => dir !== base),
     ),
   );
 }
@@ -1324,10 +1326,7 @@ export default class QueueServer {
   async #resolveMirrorRoots() {
     let projectConfig = {};
     if (this.#opts.config) projectConfig = await loadProjectConfig(this.#opts.config);
-    let roots = collectMirrorRoots(projectConfig, this.#opts.outputDir);
-    if (!roots.length && this.#opts.outputDir && projectConfig.dirs?.mirrorToOutput !== false)
-      roots = [path.resolve(this.#opts.outputDir)];
-    return roots;
+    return collectMirrorRoots(projectConfig, this.#opts.outputDir);
   }
 
   async #spawnDownload(filePath, extraArgs = []) {
@@ -1429,7 +1428,7 @@ export default class QueueServer {
     }
     if (!this.#mirrorRoots.length)
       console.warn(
-        '[airfreyr serve] no mirror directories configured — add dirs.mirror to conf.json, set AIRFREYR_MIRROR_DIRS, or use mirrorToOutput',
+        '[airfreyr serve] no mirror directories configured — add dirs.mirror to conf.json or set AIRFREYR_MIRROR_DIRS',
       );
 
     try {

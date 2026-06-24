@@ -451,6 +451,7 @@ function resolveCompilationMirrorPaths(batchMeta, track, format) {
 }
 
 function collectMirrorRoots(config, baseDirectory) {
+  const base = xpath.resolve(baseDirectory || ".");
   return Array.from(
     new Set(
       [
@@ -459,12 +460,13 @@ function collectMirrorRoots(config, baseDirectory) {
           .split(",")
           .map((dir) => dir.trim())
           .filter(Boolean),
-        ...(config?.dirs?.mirrorToOutput ? [baseDirectory] : []),
-      ].map((dirPath) =>
-        xpath.isAbsolute(dirPath)
-          ? dirPath
-          : xpath.relative(".", dirPath || ".") || ".",
-      ),
+      ]
+        .map((dirPath) =>
+          xpath.isAbsolute(dirPath)
+            ? dirPath
+            : xpath.relative(".", dirPath || ".") || ".",
+        )
+        .filter((dirPath) => xpath.resolve(dirPath) !== base),
     ),
   );
 }
@@ -1108,7 +1110,6 @@ async function init(packageJson, queries, options) {
               type: "array",
               items: { type: "string" },
             },
-            mirrorToOutput: { type: "boolean" },
             cache: {
               type: "object",
               properties: {
