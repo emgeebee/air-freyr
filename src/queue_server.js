@@ -929,8 +929,25 @@ function queueUiHtml(version) {
       return value == null ? '' : String(value);
     }
 
+    function queueFileBaseName(file) {
+      var value = String(file || '');
+      var slash = Math.max(value.lastIndexOf('/'), value.lastIndexOf('\\\\'));
+      return slash >= 0 ? value.slice(slash + 1) : value;
+    }
+
+    function stripTxtExtension(name) {
+      var value = String(name || '');
+      return value.toLowerCase().slice(-4) === '.txt' ? value.slice(0, -4) : value;
+    }
+
+    function ensureTxtExtension(name) {
+      var value = String(name || '').trim();
+      if (!value) return value;
+      return value.toLowerCase().slice(-4) === '.txt' ? value : value + '.txt';
+    }
+
     function genreFromListFile(file) {
-      var stem = String(file || '').replace(/.*[/\\]/, '').replace(/\\.txt$/i, '');
+      var stem = stripTxtExtension(queueFileBaseName(file));
       if (!stem) return 'Unknown';
       return stem
         .split(/[\s_-]+/)
@@ -988,7 +1005,7 @@ function queueUiHtml(version) {
       setError('');
       document.getElementById('rename-list-title').textContent =
         'Rename ' + genreFromListFile(state.selectedFile);
-      document.getElementById('rename-list-input').value = state.selectedFile.replace(/\\.txt$/i, '');
+      document.getElementById('rename-list-input').value = stripTxtExtension(state.selectedFile);
       renameListModal.hidden = false;
       document.getElementById('rename-list-input').focus();
       document.getElementById('rename-list-input').select();
@@ -1220,7 +1237,7 @@ function queueUiHtml(version) {
         setError('List name is required');
         return;
       }
-      if (!/\\.txt$/i.test(file)) file += '.txt';
+      file = ensureTxtExtension(file);
       setError('');
       return requestJson('/api/list', {
         method: 'POST',
@@ -1320,7 +1337,7 @@ function queueUiHtml(version) {
         setError('List name is required');
         return;
       }
-      if (!/\\.txt$/i.test(newFile)) newFile += '.txt';
+      newFile = ensureTxtExtension(newFile);
       setError('');
       var submitBtn = renameListForm.querySelector('button[type="submit"]');
       submitBtn.disabled = true;
