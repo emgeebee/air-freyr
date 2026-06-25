@@ -558,6 +558,28 @@ function queueUiHtml(version) {
       font-size: 0.9rem;
     }
     .empty { padding: 18px; }
+    .song-filter-wrap {
+      padding: 0 18px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .song-filter-wrap input {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 10px 12px;
+      background: rgba(8, 12, 20, 0.45);
+      color: var(--text);
+      font: inherit;
+    }
+    .song-filter-wrap input:focus {
+      outline: none;
+      border-color: rgba(77, 213, 153, 0.55);
+    }
+    .song-filter-wrap input:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
     .songs { display: grid; gap: 12px; padding: 18px; }
     .song {
       display: grid;
@@ -809,6 +831,9 @@ function queueUiHtml(version) {
             <button id="add-song" type="button" class="primary" disabled>Add song</button>
           </div>
         </div>
+        <div id="song-filter-wrap" class="song-filter-wrap" hidden>
+          <input id="song-filter" type="search" placeholder="Filter by artist or title..." autocomplete="off" disabled>
+        </div>
         <div id="songs" class="songs">
           <div class="empty">Choose a list to view its songs.</div>
         </div>
@@ -894,13 +919,15 @@ function queueUiHtml(version) {
     </div>
   </div>
   <script>
-    var state = {lists: [], selectedFile: null};
+    var state = {lists: [], selectedFile: null, songFilter: '', currentList: null};
     var listsEl = document.getElementById('lists');
     var songsEl = document.getElementById('songs');
     var errorEl = document.getElementById('error');
     var listCountEl = document.getElementById('list-count');
     var songsTitleEl = document.getElementById('songs-title');
     var songsCountEl = document.getElementById('songs-count');
+    var songFilterWrapEl = document.getElementById('song-filter-wrap');
+    var songFilterEl = document.getElementById('song-filter');
     var versionEl = document.getElementById('version');
     var addSongBtn = document.getElementById('add-song');
     var pasteLinesBtn = document.getElementById('paste-lines');
@@ -917,9 +944,40 @@ function queueUiHtml(version) {
     var downloadLogEl = document.getElementById('download-log');
     var statusPollTimer = null;
 
+    function selectedFileFromUrl() {
+      var file = new URLSearchParams(window.location.search).get('file');
+      return file ? file : null;
+    }
+
+    function syncSelectedFileToUrl(file) {
+      var url = new URL(window.location.href);
+      if (file) url.searchParams.set('file', file);
+      else url.searchParams.delete('file');
+      var next = url.pathname + url.search + url.hash;
+      var current = window.location.pathname + window.location.search + window.location.hash;
+      if (next !== current) history.replaceState(null, '', next);
+    }
+
+    function setSongFilterEnabled(enabled) {
+      songFilterWrapEl.hidden = !enabled;
+      songFilterEl.disabled = !enabled;
+      if (!enabled) {
+        state.songFilter = '';
+        songFilterEl.value = '';
+      }
+    }
+
+    function entryMatchesFilter(entry, filter) {
+      if (!filter) return true;
+      var hay = (text(entry.artist) + ' ' + text(entry.title)).toLowerCase();
+      return hay.indexOf(filter.toLowerCase()) >= 0;
+    }
+
     function text(value) {
       return value == null ? '' : String(value);
     }
+
+    state.selectedFile = selectedFileFromUrl();
 
     function queueFileBaseName(file) {
       var value = String(file || '');
@@ -1160,16 +1218,31 @@ function queueUiHtml(version) {
     }
 
     function renderSongs(list) {
+      state.currentList = list;
       songsTitleEl.textContent = list.file ? genreFromListFile(list.file) : 'Songs';
-      songsCountEl.textContent = list.total + ' songs';
+      var filter = state.songFilter.trim();
+      var entries = (list.entries || []).slice().reverse();
+      var visible = filter
+        ? entries.filter(function(entry) {
+            return entryMatchesFilter(entry, filter);
+          })
+        : entries;
+
+      if (filter) songsCountEl.textContent = visible.length + ' of ' + list.total + ' songs';
+      else songsCountEl.textContent = list.total + ' songs';
+
       songsEl.innerHTML = '';
 
       if (!list.entries.length) {
         songsEl.innerHTML = '<div class="empty">This list is empty.</div>';
         return;
       }
+      if (!visible.length) {
+        songsEl.innerHTML = '<div class="empty">No songs match this filter.</div>';
+        return;
+      }
 
-      list.entries.forEach(function(entry) {
+      visible.forEach(function(entry) {
         var row = document.createElement('article');
         row.className = 'song' + (entry.disabled ? ' disabled' : '');
         row.innerHTML =
@@ -1235,10 +1308,13 @@ function queueUiHtml(version) {
             })
           ) {
             state.selectedFile = null;
+            syncSelectedFileToUrl(null);
           }
           setListActionsEnabled(!!state.selectedFile);
+          setSongFilterEnabled(!!state.selectedFile);
           renderLists();
-          if (state.selectedFile) return loadList(state.selectedFile);
+          if (state.selectedFile) return loadList(state.selectedFile, {preserveFilter: true});
+          setSongFilterEnabled(false);
           return null;
         })
         .catch(function(err) {
@@ -1246,10 +1322,18 @@ function queueUiHtml(version) {
         });
     }
 
-    function loadList(file) {
+    function loadList(file, options) {
+      options = options || {};
+      var fileChanged = state.selectedFile !== file;
       setError('');
       state.selectedFile = file;
+      syncSelectedFileToUrl(file);
       setListActionsEnabled(!!file);
+      setSongFilterEnabled(!!file);
+      if (fileChanged && !options.preserveFilter) {
+        state.songFilter = '';
+        songFilterEl.value = '';
+      }
       renderLists();
       songsEl.innerHTML = '<div class="empty">Loading...</div>';
       return requestJson('/api/list?file=' + encodeURIComponent(file))
@@ -1448,6 +1532,10 @@ function queueUiHtml(version) {
       if (event.target === renameListModal) closeRenameListModal();
     });
     renameListForm.addEventListener('submit', submitRenameList);
+    songFilterEl.addEventListener('input', function() {
+      state.songFilter = songFilterEl.value;
+      if (state.currentList) renderSongs(state.currentList);
+    });
     refreshLists();
   </script>
 </body>

@@ -146,6 +146,7 @@ async function main() {
     assert.match(root.text, /id="add-song"/);
     assert.match(root.text, /id="paste-lines"/);
     assert.match(root.text, /id="rename-list"/);
+    assert.match(root.text, /id="song-filter"/);
     assert.match(root.text, /\.split\(\/\[\\s_-\]\+\/\)/);
     assert.doesNotMatch(root.text, /\.split\(\/\[s_-\]\+\/\)/);
     assert.match(root.text, /link\.target = '_blank'/);
