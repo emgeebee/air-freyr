@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 
 import cors from 'cors';
 import express from 'express';
+import filenamify from 'filenamify';
 
 import {
   QUEUE_FILE_EXTENSION,
@@ -131,6 +132,7 @@ export function resolveServeConfig(opts = {}, projectConfig = {}) {
     queueDir,
     outputDir,
     config: opts.config || null,
+    projectConfig,
     extraCliArgs: opts.extraCliArgs || [],
   };
 }
@@ -168,6 +170,66 @@ function summarizeEntries(entries) {
     total: entries.length,
     active: entries.filter(entry => !entry.disabled).length,
     disabled: entries.filter(entry => entry.disabled).length,
+  };
+}
+
+async function fileExists(filePath) {
+  if (!filePath) return false;
+  try {
+    await access(filePath, fsConstants.F_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function audioFormatFromArgs(args = []) {
+  let format = 'mp3';
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '-x' || arg === '--format') {
+      if (args[index + 1]) format = args[index + 1];
+      index += 1;
+    } else if (typeof arg === 'string' && arg.startsWith('--format=')) {
+      format = arg.slice('--format='.length);
+    } else if (typeof arg === 'string' && arg.startsWith('-x') && arg.length > 2) {
+      format = arg.slice(2);
+    }
+  }
+  return format || 'mp3';
+}
+
+function resolveBatchEntryPaths(entry, format) {
+  if (!entry?.genre || !entry?.artist) return null;
+  const title = entry.title || entry.artist;
+  const trackBaseName = `${entry.artist} - ${title}`;
+  const outFileName = `${filenamify(trackBaseName, {replacement: '_'})}.${format}`;
+  const genrePath = filenamify(entry.genre, {replacement: '_'});
+  return {
+    download: {
+      trackPath: genrePath,
+      outFileName,
+    },
+    mirror: {
+      trackPath: path.join(
+        genrePath,
+        filenamify('Compilations', {replacement: '_'}),
+        filenamify('YouTube', {replacement: '_'}),
+      ),
+      outFileName,
+    },
+  };
+}
+
+async function addEntryFileStatuses(list, resolveLocations) {
+  return {
+    ...list,
+    entries: await Promise.all(
+      list.entries.map(async entry => ({
+        ...entry,
+        files: await resolveLocations(entry),
+      })),
+    ),
   };
 }
 
@@ -516,6 +578,40 @@ function queueUiHtml(version) {
       margin-top: 8px;
       overflow-wrap: anywhere;
     }
+    .song-link {
+      margin-top: 8px;
+      overflow-wrap: anywhere;
+      font-size: 0.9rem;
+    }
+    .song-link a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .song-link a:hover { text-decoration: underline; }
+    .file-statuses {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+    }
+    .file-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 3px 8px;
+      color: var(--muted);
+      font-size: 0.78rem;
+    }
+    .file-chip.exists {
+      border-color: rgba(77, 213, 153, 0.45);
+      color: var(--accent);
+    }
+    .file-chip.missing {
+      border-color: rgba(255, 107, 107, 0.45);
+      color: #ffb4b4;
+    }
     .actions {
       display: flex;
       flex-wrap: wrap;
@@ -719,6 +815,7 @@ function queueUiHtml(version) {
         <div id="download-status" class="download-status" hidden>
           <h3>Download</h3>
           <div id="download-summary" class="meta"></div>
+          <div id="download-files" class="download-files"></div>
           <pre id="download-log" hidden></pre>
           <p class="hint">Container logs: <code>docker logs --tail 100 airfreyr</code></p>
         </div>
@@ -816,6 +913,7 @@ function queueUiHtml(version) {
     var renameListForm = document.getElementById('rename-list-form');
     var downloadStatusEl = document.getElementById('download-status');
     var downloadSummaryEl = document.getElementById('download-summary');
+    var downloadFilesEl = document.getElementById('download-files');
     var downloadLogEl = document.getElementById('download-log');
     var statusPollTimer = null;
 
@@ -919,6 +1017,10 @@ function queueUiHtml(version) {
       errorEl.textContent = message || '';
     }
 
+    function clearElement(element) {
+      while (element.firstChild) element.removeChild(element.firstChild);
+    }
+
     function requestJson(url, options) {
       return fetch(url, options).then(function(res) {
         return res.json().then(function(body) {
@@ -929,9 +1031,40 @@ function queueUiHtml(version) {
       });
     }
 
-    function renderDownloadStatus(download) {
+    function renderFileLocations(container, locations) {
+      clearElement(container);
+      (locations || []).forEach(function(location) {
+        var chip = document.createElement('span');
+        chip.className =
+          'file-chip ' + (location.exists ? 'exists' : location.configured ? 'missing' : 'unconfigured');
+        chip.title = location.path || location.root || 'No path configured';
+        chip.textContent = (location.exists ? '✓' : location.configured ? '✕' : '-') + ' ' + location.label;
+        container.appendChild(chip);
+      });
+    }
+
+    function renderDownloadFiles(files) {
+      clearElement(downloadFilesEl);
+      if (!files || !files.length) return;
+      files.forEach(function(file) {
+        var row = document.createElement('div');
+        row.className = 'download-file-row';
+        var label = document.createElement('div');
+        label.className = 'meta';
+        label.textContent = file.label || '';
+        var locations = document.createElement('div');
+        locations.className = 'file-statuses';
+        renderFileLocations(locations, file.files || []);
+        row.appendChild(label);
+        row.appendChild(locations);
+        downloadFilesEl.appendChild(row);
+      });
+    }
+
+    function renderDownloadStatus(download, files) {
       if (!state.selectedFile || !download) {
         downloadStatusEl.hidden = true;
+        clearElement(downloadFilesEl);
         return;
       }
       downloadStatusEl.hidden = false;
@@ -948,6 +1081,7 @@ function queueUiHtml(version) {
         parts.push('<span class="status-bad">' + text(download.lastError) + '</span>');
       }
       downloadSummaryEl.innerHTML = parts.join(' · ');
+      renderDownloadFiles(files);
       if (download.lastLog) {
         downloadLogEl.hidden = false;
         downloadLogEl.textContent = download.lastLog;
@@ -959,12 +1093,12 @@ function queueUiHtml(version) {
 
     function refreshDownloadStatus() {
       if (!state.selectedFile) {
-        renderDownloadStatus(null);
+        renderDownloadStatus(null, []);
         return Promise.resolve();
       }
       return requestJson('/status?file=' + encodeURIComponent(state.selectedFile))
         .then(function(body) {
-          renderDownloadStatus(body.download);
+          renderDownloadStatus(body.download, body.files);
           if (body.download && (body.download.running || body.download.pending)) {
             if (!statusPollTimer) {
               statusPollTimer = window.setInterval(refreshDownloadStatus, 3000);
@@ -1011,8 +1145,18 @@ function queueUiHtml(version) {
     function songMeta(entry) {
       var values = [];
       if (entry.note) values.push(entry.note);
-      if (entry.url) values.push(entry.url);
       return values.join(' | ');
+    }
+
+    function renderSongLink(container, entry) {
+      clearElement(container);
+      if (!entry.url) return;
+      var link = document.createElement('a');
+      link.href = entry.url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.textContent = entry.url;
+      container.appendChild(link);
     }
 
     function renderSongs(list) {
@@ -1032,7 +1176,8 @@ function queueUiHtml(version) {
           '<div>' +
           '<h3></h3>' +
           '<div class="meta"></div>' +
-          '<div class="raw"></div>' +
+          '<div class="song-link"></div>' +
+          '<div class="file-statuses"></div>' +
           '</div>' +
           '<div class="actions"></div>';
         row.querySelector('h3').textContent = songTitle(entry);
@@ -1043,8 +1188,8 @@ function queueUiHtml(version) {
           row.querySelector('h3').appendChild(badge);
         }
         row.querySelector('.meta').textContent = songMeta(entry);
-        row.querySelector('.raw').textContent =
-          'Line ' + entry.line + (entry.note ? ': ' + text(entry.note) : '');
+        renderSongLink(row.querySelector('.song-link'), entry);
+        renderFileLocations(row.querySelector('.file-statuses'), entry.files || []);
 
         var actions = row.querySelector('.actions');
         if (!entry.disabled) {
@@ -1071,7 +1216,7 @@ function queueUiHtml(version) {
         remove.className = 'danger';
         remove.textContent = 'Delete';
         remove.addEventListener('click', function() {
-          if (window.confirm('Delete line ' + entry.line + ' from ' + list.file + '?')) mutateSong(entry.line, 'delete');
+          if (window.confirm('Delete this song from ' + list.file + '?')) mutateSong(entry.line, 'delete');
         });
         actions.appendChild(remove);
         songsEl.appendChild(row);
@@ -1323,8 +1468,55 @@ export default class QueueServer {
     return `http://${this.#opts.hostname}:${this.#opts.port}`;
   }
 
+  get #audioFormat() {
+    return audioFormatFromArgs(this.#opts.extraCliArgs);
+  }
+
+  async #resolveEntryFileLocations(entry) {
+    const resolvedPaths = resolveBatchEntryPaths(entry, this.#audioFormat);
+    const outputRoot = this.#opts.outputDir ? path.resolve(this.#opts.outputDir) : null;
+    const downloadPath = outputRoot && resolvedPaths
+      ? path.join(outputRoot, resolvedPaths.download.trackPath, resolvedPaths.download.outFileName)
+      : null;
+    const locations = [
+      {
+        type: 'download',
+        label: 'Download',
+        root: outputRoot,
+        path: downloadPath,
+        configured: !!downloadPath,
+        exists: await fileExists(downloadPath),
+      },
+    ];
+    for (const mirrorRoot of this.#mirrorRoots) {
+      const root = path.resolve(mirrorRoot);
+      const mirrorPath = resolvedPaths
+        ? path.join(root, resolvedPaths.mirror.trackPath, resolvedPaths.mirror.outFileName)
+        : null;
+      locations.push({
+        type: 'mirror',
+        label: `Mirror ${locations.filter(location => location.type === 'mirror').length + 1}`,
+        root,
+        path: mirrorPath,
+        configured: !!mirrorPath,
+        exists: await fileExists(mirrorPath),
+      });
+    }
+    return locations;
+  }
+
+  async #readQueueFile(file) {
+    return addEntryFileStatuses(await readQueueFile(this.#opts.queueDir, file), entry =>
+      this.#resolveEntryFileLocations(entry),
+    );
+  }
+
+  async #withEntryFileStatuses(list) {
+    return addEntryFileStatuses(list, entry => this.#resolveEntryFileLocations(entry));
+  }
+
   async #resolveMirrorRoots() {
-    let projectConfig = {};
+    let projectConfig = this.#opts.projectConfig || {};
     if (this.#opts.config) projectConfig = await loadProjectConfig(this.#opts.config);
     return collectMirrorRoots(projectConfig, this.#opts.outputDir);
   }
@@ -1465,7 +1657,7 @@ export default class QueueServer {
 
     app.get('/api/list', async (req, res) => {
       try {
-        res.json(apiJson({ok: true, ...(await readQueueFile(this.#opts.queueDir, req.query.file))}));
+        res.json(apiJson({ok: true, ...(await this.#readQueueFile(req.query.file))}));
       } catch (err) {
         apiError(res, err);
       }
@@ -1473,10 +1665,11 @@ export default class QueueServer {
 
     app.post('/api/list', async (req, res) => {
       try {
+        const created = await createQueueFile(this.#opts.queueDir, req.body.file);
         res.status(201).json(
           apiJson({
             ok: true,
-            ...(await createQueueFile(this.#opts.queueDir, req.body.file)),
+            ...(await this.#withEntryFileStatuses(created)),
           }),
         );
       } catch (err) {
@@ -1489,10 +1682,11 @@ export default class QueueServer {
         const {file, newFile} = req.body || {};
         if (!file) throw new Error('`file` is required');
         if (!newFile) throw new Error('`newFile` is required');
+        const renamed = await renameQueueFile(this.#opts.queueDir, file, newFile);
         res.json(
           apiJson({
             ok: true,
-            ...(await renameQueueFile(this.#opts.queueDir, file, newFile)),
+            ...(await this.#withEntryFileStatuses(renamed)),
           }),
         );
       } catch (err) {
@@ -1511,7 +1705,7 @@ export default class QueueServer {
         res.status(201).json(
           apiJson({
             ok: true,
-            ...result,
+            ...(await this.#withEntryFileStatuses(result)),
             download: this.#scheduler.getStatus(filePath),
           }),
         );
@@ -1522,10 +1716,16 @@ export default class QueueServer {
 
     app.post('/api/list/item', async (req, res) => {
       try {
+        const list = await updateQueueFileItem(
+          this.#opts.queueDir,
+          req.body.file,
+          req.body.line,
+          req.body.action,
+        );
         res.json(
           apiJson({
             ok: true,
-            ...(await updateQueueFileItem(this.#opts.queueDir, req.body.file, req.body.line, req.body.action)),
+            ...(await this.#withEntryFileStatuses(list)),
           }),
         );
       } catch (err) {
@@ -1574,14 +1774,19 @@ export default class QueueServer {
       }
     });
 
-    app.get('/status', (req, res) => {
+    app.get('/status', async (req, res) => {
       try {
         const filePath = resolveQueueFile(this.#opts.queueDir, req.query.file);
+        const list = await this.#readQueueFile(req.query.file);
         res.json(
           apiJson({
             ok: true,
             file: req.query.file,
             download: this.#scheduler.getStatus(filePath),
+            files: list.entries.map(entry => ({
+              label: entry.label,
+              files: entry.files,
+            })),
           }),
         );
       } catch (err) {
