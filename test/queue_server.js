@@ -3,7 +3,7 @@ import http from 'http';
 import net from 'net';
 import {tmpdir} from 'os';
 import path from 'path';
-import {mkdtemp, readFile, rm, writeFile} from 'fs/promises';
+import {mkdir, mkdtemp, readFile, rm, writeFile} from 'fs/promises';
 
 import QueueServer, {genreFromQueueFile} from '../src/queue_server.js';
 import {
@@ -93,6 +93,9 @@ async function main() {
   }
 
   const queueDir = await mkdtemp(path.join(tmpdir(), 'airfreyr-queue-test-'));
+  const outputDir = await mkdtemp(path.join(tmpdir(), 'airfreyr-output-test-'));
+  const mirrorOne = await mkdtemp(path.join(tmpdir(), 'airfreyr-mirror-one-test-'));
+  const mirrorTwo = await mkdtemp(path.join(tmpdir(), 'airfreyr-mirror-two-test-'));
   const queueFile = path.join(queueDir, 'kids.json');
   let server;
 
@@ -115,13 +118,24 @@ async function main() {
     };
     await writeFile(queueFile, serializeQueueDocument(initialDocument), 'utf8');
     await writeFile(path.join(queueDir, 'ignored.md'), '# not a queue', 'utf8');
+    const downloadPath = path.join(outputDir, 'Kids', 'Artist - Title.mp3');
+    const mirrorPath = path.join(mirrorOne, 'Kids', 'Compilations', 'YouTube', 'Artist - Title.mp3');
+    await mkdir(path.dirname(downloadPath), {recursive: true});
+    await mkdir(path.dirname(mirrorPath), {recursive: true});
+    await writeFile(downloadPath, 'downloaded', 'utf8');
+    await writeFile(mirrorPath, 'mirrored', 'utf8');
 
     const port = await freePort();
     server = new QueueServer({
       hostname: '127.0.0.1',
       port,
       queueDir,
-      projectConfig: {},
+      outputDir,
+      projectConfig: {
+        dirs: {
+          mirror: [mirrorOne, mirrorTwo],
+        },
+      },
     });
     await server.start();
 
@@ -134,6 +148,9 @@ async function main() {
     assert.match(root.text, /id="rename-list"/);
     assert.match(root.text, /\.split\(\/\[\\s_-\]\+\/\)/);
     assert.doesNotMatch(root.text, /\.split\(\/\[s_-\]\+\/\)/);
+    assert.match(root.text, /link\.target = '_blank'/);
+    assert.match(root.text, /renderFileLocations/);
+    assert.doesNotMatch(root.text, /Delete line/);
 
     const lists = await request(port, 'GET', '/api/lists');
     assert.equal(lists.status, 200);
@@ -157,7 +174,40 @@ async function main() {
     assert.equal(list.json.entries[0].artist, 'Artist');
     assert.equal(list.json.entries[0].title, 'Title');
     assert.equal(list.json.entries[0].note, 'note');
+    assert.deepEqual(list.json.entries[0].files, [
+      {
+        type: 'download',
+        label: 'Download',
+        root: outputDir,
+        path: downloadPath,
+        configured: true,
+        exists: true,
+      },
+      {
+        type: 'mirror',
+        label: 'Mirror 1',
+        root: mirrorOne,
+        path: mirrorPath,
+        configured: true,
+        exists: true,
+      },
+      {
+        type: 'mirror',
+        label: 'Mirror 2',
+        root: mirrorTwo,
+        path: path.join(mirrorTwo, 'Kids', 'Compilations', 'YouTube', 'Artist - Title.mp3'),
+        configured: true,
+        exists: false,
+      },
+    ]);
     assert.equal(list.json.entries[1].disabled, true);
+
+    const status = await request(port, 'GET', '/status?file=kids.json');
+    assert.equal(status.status, 200);
+    assert.equal(status.json.files[0].label, 'Artist - Title');
+    assert.equal(status.json.files[0].files[0].exists, true);
+    assert.equal(status.json.files[0].files[1].exists, true);
+    assert.equal(status.json.files[0].files[2].exists, false);
 
     const traversal = await request(port, 'GET', '/api/list?file=../kids.json');
     assert.equal(traversal.status, 400);
@@ -289,6 +339,9 @@ async function main() {
   } finally {
     if (server) await server.stop();
     await rm(queueDir, {recursive: true, force: true});
+    await rm(outputDir, {recursive: true, force: true});
+    await rm(mirrorOne, {recursive: true, force: true});
+    await rm(mirrorTwo, {recursive: true, force: true});
   }
 }
 
