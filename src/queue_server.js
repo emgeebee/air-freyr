@@ -14,8 +14,11 @@ import {
   ensureQueueExtension,
   genreFromQueueFilename,
   importCsvText,
+  normalizeQueueMirrors,
   normalizeStoredEntry,
   parseQueueDocument,
+  queueMirrorOptions,
+  resolveQueueMirrorRoots,
   serializeQueueDocument,
   stripQueueExtension,
   toApiEntry,
@@ -258,13 +261,18 @@ async function listQueueFiles(dataDir) {
   );
 }
 
-async function readQueueFile(dataDir, file) {
+async function readQueueFile(dataDir, file, availableMirrors = []) {
   const filePath = resolveQueueFile(dataDir, file);
-  const entries = await readQueueEntries(filePath, file);
+  const document = await readQueueDocument(filePath);
+  const fileGenre = genreFromQueueFilename(file);
+  const entries = document.entries.map((entry, index) => toApiEntry(entry, index, fileGenre));
+  const mirrors = normalizeQueueMirrors(document.mirrors);
   return {
     file,
     filePath,
     entries,
+    mirrors,
+    availableMirrors: queueMirrorOptions(document, availableMirrors),
     ...summarizeEntries(entries),
   };
 }
@@ -277,7 +285,21 @@ function normalizeQueueFileName(file) {
   return trimmed;
 }
 
-async function createQueueFile(dataDir, file) {
+async function updateQueueFileMirrors(dataDir, file, mirrors, availableMirrors) {
+  const filePath = resolveQueueFile(dataDir, file);
+  const normalized = normalizeQueueMirrors(mirrors);
+  const allowed = new Set(availableMirrors.map(root => path.resolve(root)));
+  for (const mirror of normalized) {
+    if (!allowed.has(path.resolve(mirror)))
+      throw new Error(`unknown mirror directory: ${mirror}`);
+  }
+  const document = await readQueueDocument(filePath);
+  document.mirrors = normalized;
+  await writeQueueDocument(filePath, document);
+  return readQueueFile(dataDir, file, availableMirrors);
+}
+
+async function createQueueFile(dataDir, file, availableMirrors = []) {
   const name = normalizeQueueFileName(file);
   const filePath = resolveQueueFile(dataDir, name);
   try {
@@ -288,13 +310,13 @@ async function createQueueFile(dataDir, file) {
   }
   await mkdir(path.dirname(filePath), {recursive: true});
   await writeQueueDocument(filePath, emptyQueueDocument());
-  return readQueueFile(dataDir, name);
+  return readQueueFile(dataDir, name, availableMirrors);
 }
 
-async function renameQueueFile(dataDir, file, newFile) {
+async function renameQueueFile(dataDir, file, newFile, availableMirrors = []) {
   const from = normalizeQueueFileName(file);
   const to = normalizeQueueFileName(newFile);
-  if (from === to) return readQueueFile(dataDir, to);
+  if (from === to) return readQueueFile(dataDir, to, availableMirrors);
   const fromPath = resolveQueueFile(dataDir, from);
   const toPath = resolveQueueFile(dataDir, to);
   try {
@@ -309,10 +331,10 @@ async function renameQueueFile(dataDir, file, newFile) {
     if (err.code !== 'ENOENT') throw err;
   }
   await rename(fromPath, toPath);
-  return {from, file: to, ...(await readQueueFile(dataDir, to))};
+  return {from, file: to, ...(await readQueueFile(dataDir, to, availableMirrors))};
 }
 
-async function updateQueueFileItem(dataDir, file, line, action) {
+async function updateQueueFileItem(dataDir, file, line, action, availableMirrors = []) {
   const filePath = resolveQueueFile(dataDir, file);
   const lineNumber = Number.parseInt(line, 10);
   if (!Number.isInteger(lineNumber) || lineNumber < 1) throw new Error('`line` must be a positive integer');
@@ -326,11 +348,11 @@ async function updateQueueFileItem(dataDir, file, line, action) {
   else document.entries.splice(index, 1);
 
   await writeQueueDocument(filePath, document);
-  return readQueueFile(dataDir, file);
+  return readQueueFile(dataDir, file, availableMirrors);
 }
 
-async function retryQueueFileItem(dataDir, file, line) {
-  const list = await readQueueFile(dataDir, file);
+async function retryQueueFileItem(dataDir, file, line, availableMirrors = []) {
+  const list = await readQueueFile(dataDir, file, availableMirrors);
   const lineNumber = Number.parseInt(line, 10);
   if (!Number.isInteger(lineNumber) || lineNumber < 1) throw new Error('`line` must be a positive integer');
   const entry = list.entries.find(item => item.line === lineNumber);
@@ -362,14 +384,14 @@ function normalizeAddPayload(body) {
   };
 }
 
-async function appendBulkQueueLines(dataDir, file, text) {
+async function appendBulkQueueLines(dataDir, file, text, availableMirrors = []) {
   const filePath = resolveQueueFile(dataDir, file);
   const fileGenre = genreFromQueueFilename(file);
   const imported = importCsvText(text, file);
   const document = await readQueueDocument(filePath);
   document.entries.push(...imported);
   await writeQueueDocument(filePath, document);
-  return {file, added: imported.length, ...(await readQueueFile(dataDir, file))};
+  return {file, added: imported.length, ...(await readQueueFile(dataDir, file, availableMirrors))};
 }
 
 async function migrateTxtQueueFiles(dataDir) {
@@ -579,6 +601,36 @@ function queueUiHtml(version) {
     .song-filter-wrap input:disabled {
       opacity: 0.55;
       cursor: not-allowed;
+    }
+    .mirror-settings-wrap {
+      padding: 0 18px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .mirror-settings-wrap h3 {
+      margin: 0 0 6px;
+      font-size: 0.95rem;
+    }
+    .mirror-options {
+      display: grid;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .mirror-option {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: rgba(8, 12, 20, 0.35);
+      cursor: pointer;
+    }
+    .mirror-option input {
+      margin-top: 3px;
+    }
+    .mirror-option span {
+      overflow-wrap: anywhere;
+      font-size: 0.92rem;
     }
     .songs { display: grid; gap: 12px; padding: 18px; }
     .song {
@@ -834,6 +886,11 @@ function queueUiHtml(version) {
         <div id="song-filter-wrap" class="song-filter-wrap" hidden>
           <input id="song-filter" type="search" placeholder="Filter by artist or title..." autocomplete="off" disabled>
         </div>
+        <div id="mirror-settings-wrap" class="mirror-settings-wrap" hidden>
+          <h3>Mirrors</h3>
+          <p class="hint">Opt in to copy downloads from this list into specific library folders.</p>
+          <div id="mirror-options" class="mirror-options"></div>
+        </div>
         <div id="songs" class="songs">
           <div class="empty">Choose a list to view its songs.</div>
         </div>
@@ -928,6 +985,8 @@ function queueUiHtml(version) {
     var songsCountEl = document.getElementById('songs-count');
     var songFilterWrapEl = document.getElementById('song-filter-wrap');
     var songFilterEl = document.getElementById('song-filter');
+    var mirrorSettingsWrapEl = document.getElementById('mirror-settings-wrap');
+    var mirrorOptionsEl = document.getElementById('mirror-options');
     var versionEl = document.getElementById('version');
     var addSongBtn = document.getElementById('add-song');
     var pasteLinesBtn = document.getElementById('paste-lines');
@@ -956,6 +1015,77 @@ function queueUiHtml(version) {
       var next = url.pathname + url.search + url.hash;
       var current = window.location.pathname + window.location.search + window.location.hash;
       if (next !== current) history.replaceState(null, '', next);
+    }
+
+    function setMirrorSettingsEnabled(enabled) {
+      mirrorSettingsWrapEl.hidden = !enabled;
+      if (!enabled) mirrorOptionsEl.innerHTML = '';
+    }
+
+    function selectedMirrorsFromOptions() {
+      return Array.prototype.slice
+        .call(mirrorOptionsEl.querySelectorAll('input[type="checkbox"]'))
+        .filter(function(input) {
+          return input.checked;
+        })
+        .map(function(input) {
+          return input.value;
+        });
+    }
+
+    function renderMirrorSettings(list) {
+      mirrorOptionsEl.innerHTML = '';
+      if (!list || !list.file) {
+        setMirrorSettingsEnabled(false);
+        return;
+      }
+      setMirrorSettingsEnabled(true);
+      if (!list.availableMirrors || !list.availableMirrors.length) {
+        mirrorOptionsEl.innerHTML =
+          '<div class="meta">No mirror directories are configured on the server.</div>';
+        return;
+      }
+      list.availableMirrors.forEach(function(mirror) {
+        var label = document.createElement('label');
+        label.className = 'mirror-option';
+        var input = document.createElement('input');
+        input.type = 'checkbox';
+        input.value = mirror.path;
+        input.checked = !!mirror.selected;
+        input.addEventListener('change', function() {
+          var nextMirrors = selectedMirrorsFromOptions();
+          if (
+            !window.confirm('Are you sure you want to change mirror settings for this list?')
+          ) {
+            input.checked = !input.checked;
+            return;
+          }
+          saveQueueMirrors(nextMirrors, input);
+        });
+        var textEl = document.createElement('span');
+        textEl.textContent = mirror.path;
+        label.appendChild(input);
+        label.appendChild(textEl);
+        mirrorOptionsEl.appendChild(label);
+      });
+    }
+
+    function saveQueueMirrors(mirrors, changedInput) {
+      setError('');
+      return requestJson('/api/list/mirrors', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({file: state.selectedFile, mirrors: mirrors}),
+      })
+        .then(function(body) {
+          state.currentList = body;
+          renderMirrorSettings(body);
+          return body;
+        })
+        .catch(function(err) {
+          if (changedInput) changedInput.checked = !changedInput.checked;
+          setError(err.message);
+        });
     }
 
     function setSongFilterEnabled(enabled) {
@@ -1219,6 +1349,7 @@ function queueUiHtml(version) {
 
     function renderSongs(list) {
       state.currentList = list;
+      renderMirrorSettings(list);
       songsTitleEl.textContent = list.file ? genreFromListFile(list.file) : 'Songs';
       var filter = state.songFilter.trim();
       var entries = (list.entries || []).slice().reverse();
@@ -1315,6 +1446,7 @@ function queueUiHtml(version) {
           renderLists();
           if (state.selectedFile) return loadList(state.selectedFile, {preserveFilter: true});
           setSongFilterEnabled(false);
+          setMirrorSettingsEnabled(false);
           return null;
         })
         .catch(function(err) {
@@ -1544,12 +1676,14 @@ function queueUiHtml(version) {
 
 export default class QueueServer {
   #opts;
+  #projectConfig = {};
   #scheduler = new FileDownloadScheduler();
   #server = null;
   #mirrorRoots = [];
 
   constructor(opts = {}) {
-    this.#opts = resolveServeConfig(opts, opts.projectConfig);
+    this.#projectConfig = opts.projectConfig || {};
+    this.#opts = resolveServeConfig(opts, this.#projectConfig);
   }
 
   get baseUrl() {
@@ -1594,8 +1728,9 @@ export default class QueueServer {
   }
 
   async #readQueueFile(file) {
-    return addEntryFileStatuses(await readQueueFile(this.#opts.queueDir, file), entry =>
-      this.#resolveEntryFileLocations(entry),
+    return addEntryFileStatuses(
+      await readQueueFile(this.#opts.queueDir, file, this.#mirrorRoots),
+      entry => this.#resolveEntryFileLocations(entry),
     );
   }
 
@@ -1603,21 +1738,44 @@ export default class QueueServer {
     return addEntryFileStatuses(list, entry => this.#resolveEntryFileLocations(entry));
   }
 
+  async #loadProjectConfig() {
+    let projectConfig = {...this.#projectConfig};
+    if (this.#opts.config) {
+      const fileConfig = await loadProjectConfig(this.#opts.config);
+      projectConfig = {
+        ...projectConfig,
+        ...fileConfig,
+        dirs: {
+          ...(projectConfig.dirs || {}),
+          ...(fileConfig.dirs || {}),
+          mirror: Array.from(
+            new Set([
+              ...(projectConfig.dirs?.mirror || []),
+              ...(fileConfig.dirs?.mirror || []),
+            ]),
+          ),
+        },
+      };
+    }
+    return projectConfig;
+  }
+
   async #resolveMirrorRoots() {
-    let projectConfig = this.#opts.projectConfig || {};
-    if (this.#opts.config) projectConfig = await loadProjectConfig(this.#opts.config);
+    const projectConfig = await this.#loadProjectConfig();
     return collectMirrorRoots(projectConfig, this.#opts.outputDir);
   }
 
   async #spawnDownload(filePath, extraArgs = []) {
-    const mirrorRoots = await this.#resolveMirrorRoots();
+    const availableMirrors = await this.#resolveMirrorRoots();
+    const document = await readQueueDocument(filePath);
+    const mirrorRoots = resolveQueueMirrorRoots(document, availableMirrors);
     return new Promise((resolve, reject) => {
       const dlArgs = ['-i', filePath, '--no-logo', '--no-header', ...extraArgs, ...this.#opts.extraCliArgs];
       if (this.#opts.outputDir) dlArgs.push('-d', this.#opts.outputDir);
       if (this.#opts.config) dlArgs.push('-o', this.#opts.config);
       for (const mirrorRoot of mirrorRoots) dlArgs.push('--mirror-dir', mirrorRoot);
 
-      const spawnEnv = { ...process.env };
+      const spawnEnv = {...process.env};
       if (mirrorRoots.length) spawnEnv.AIRFREYR_MIRROR_DIRS = mirrorRoots.join(',');
 
       const useNpx = process.env.AIRFREYR_SPAWN_NPX === '1';
@@ -1628,7 +1786,9 @@ export default class QueueServer {
 
       console.log(`[airfreyr serve] download: ${cmd} ${args.join(' ')}`);
       if (mirrorRoots.length)
-        console.log(`[airfreyr serve] mirror directories: ${mirrorRoots.join(', ')}`);
+        console.log(`[airfreyr serve] mirror directories for queue: ${mirrorRoots.join(', ')}`);
+      else if (availableMirrors.length)
+        console.log('[airfreyr serve] this queue has no mirror directories selected');
       else
         console.warn('[airfreyr serve] no mirror directories configured for this download');
 
@@ -1685,10 +1845,7 @@ export default class QueueServer {
       throw new Error('port must be a valid TCP port');
 
     if (this.#opts.config) await assertReadable(this.#opts.config, 'config file');
-    let projectConfig = {};
-    if (this.#opts.config) {
-      projectConfig = await loadProjectConfig(this.#opts.config);
-    }
+    const projectConfig = await this.#loadProjectConfig();
     if (this.#opts.outputDir) {
       try {
         await mkdir(this.#opts.outputDir, {recursive: true});
@@ -1753,7 +1910,7 @@ export default class QueueServer {
 
     app.post('/api/list', async (req, res) => {
       try {
-        const created = await createQueueFile(this.#opts.queueDir, req.body.file);
+        const created = await createQueueFile(this.#opts.queueDir, req.body.file, this.#mirrorRoots);
         res.status(201).json(
           apiJson({
             ok: true,
@@ -1770,7 +1927,7 @@ export default class QueueServer {
         const {file, newFile} = req.body || {};
         if (!file) throw new Error('`file` is required');
         if (!newFile) throw new Error('`newFile` is required');
-        const renamed = await renameQueueFile(this.#opts.queueDir, file, newFile);
+        const renamed = await renameQueueFile(this.#opts.queueDir, file, newFile, this.#mirrorRoots);
         res.json(
           apiJson({
             ok: true,
@@ -1788,7 +1945,12 @@ export default class QueueServer {
         if (!file) throw new Error('`file` is required');
         if (!lines || typeof lines !== 'string') throw new Error('`lines` is required');
         const filePath = resolveQueueFile(this.#opts.queueDir, file);
-        const result = await appendBulkQueueLines(this.#opts.queueDir, file, lines);
+        const result = await appendBulkQueueLines(
+          this.#opts.queueDir,
+          file,
+          lines,
+          this.#mirrorRoots,
+        );
         this.#scheduler.schedule(filePath, fp => this.#spawnDownload(fp));
         res.status(201).json(
           apiJson({
@@ -1809,6 +1971,7 @@ export default class QueueServer {
           req.body.file,
           req.body.line,
           req.body.action,
+          this.#mirrorRoots,
         );
         res.json(
           apiJson({
@@ -1821,10 +1984,32 @@ export default class QueueServer {
       }
     });
 
+    app.post('/api/list/mirrors', async (req, res) => {
+      try {
+        const {file, mirrors} = req.body || {};
+        if (!file) throw new Error('`file` is required');
+        if (!Array.isArray(mirrors)) throw new Error('`mirrors` must be an array');
+        const updated = await updateQueueFileMirrors(
+          this.#opts.queueDir,
+          file,
+          mirrors,
+          this.#mirrorRoots,
+        );
+        res.json(
+          apiJson({
+            ok: true,
+            ...(await this.#withEntryFileStatuses(updated)),
+          }),
+        );
+      } catch (err) {
+        apiError(res, err);
+      }
+    });
+
     app.post('/api/list/item/retry', async (req, res) => {
       try {
         const {file, line} = req.body || {};
-        const retry = await retryQueueFileItem(this.#opts.queueDir, file, line);
+        const retry = await retryQueueFileItem(this.#opts.queueDir, file, line, this.#mirrorRoots);
         const filePath = resolveQueueFile(this.#opts.queueDir, file);
         this.#scheduler.schedule(filePath, fp =>
           this.#spawnDownload(fp, ['--line', String(retry.line), '--remirror']),

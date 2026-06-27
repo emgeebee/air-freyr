@@ -9,6 +9,8 @@ import QueueServer, {genreFromQueueFile} from '../src/queue_server.js';
 import {
   importCsvText,
   parseQueueDocument,
+  queueMirrorOptions,
+  resolveQueueMirrorRoots,
   serializeQueueDocument,
 } from '../src/queue_format.js';
 
@@ -66,6 +68,20 @@ async function main() {
   assert.equal(genreFromQueueFile('kids.json'), 'Kids');
   assert.equal(genreFromQueueFile('folk rock.json'), 'Folk Rock');
   assert.equal(genreFromQueueFile('folk-rock.json'), 'Folk Rock');
+
+  const availableMirrors = ['/data/cds-alac', '/data/cds-mp3'];
+  assert.deepEqual(
+    resolveQueueMirrorRoots({mirrors: ['/data/cds-mp3']}, availableMirrors),
+    ['/data/cds-mp3'],
+  );
+  assert.deepEqual(resolveQueueMirrorRoots({mirrors: []}, availableMirrors), []);
+  assert.deepEqual(
+    queueMirrorOptions({mirrors: ['/data/cds-mp3']}, availableMirrors),
+    [
+      {path: '/data/cds-alac', selected: false},
+      {path: '/data/cds-mp3', selected: true},
+    ],
+  );
 
   const migrateDir = await mkdtemp(path.join(tmpdir(), 'airfreyr-migrate-test-'));
   const migrateTxt = path.join(migrateDir, 'pop.txt');
@@ -147,6 +163,7 @@ async function main() {
     assert.match(root.text, /id="paste-lines"/);
     assert.match(root.text, /id="rename-list"/);
     assert.match(root.text, /id="song-filter"/);
+    assert.match(root.text, /id="mirror-settings-wrap"/);
     assert.match(root.text, /\.split\(\/\[\\s_-\]\+\/\)/);
     assert.doesNotMatch(root.text, /\.split\(\/\[s_-\]\+\/\)/);
     assert.match(root.text, /link\.target = '_blank'/);
@@ -202,6 +219,27 @@ async function main() {
       },
     ]);
     assert.equal(list.json.entries[1].disabled, true);
+    assert.deepEqual(list.json.mirrors, []);
+    assert.deepEqual(list.json.availableMirrors, [
+      {path: mirrorOne, selected: false},
+      {path: mirrorTwo, selected: false},
+    ]);
+
+    const mirrors = await request(port, 'POST', '/api/list/mirrors', {
+      file: 'kids.json',
+      mirrors: [mirrorTwo],
+    });
+    assert.equal(mirrors.status, 200);
+    assert.equal(mirrors.json.ok, true);
+    assert.deepEqual(mirrors.json.mirrors, [mirrorTwo]);
+    assert.deepEqual(parseQueueDocument(await readFile(queueFile, 'utf8')).mirrors, [mirrorTwo]);
+
+    const invalidMirror = await request(port, 'POST', '/api/list/mirrors', {
+      file: 'kids.json',
+      mirrors: ['/tmp/not-configured'],
+    });
+    assert.equal(invalidMirror.status, 400);
+    assert.equal(invalidMirror.json.ok, false);
 
     const status = await request(port, 'GET', '/status?file=kids.json');
     assert.equal(status.status, 200);
@@ -258,6 +296,7 @@ async function main() {
     assert.equal(created.json.file, 'new-list.json');
     assert.equal(created.json.total, 0);
     assert.deepEqual(parseQueueDocument(await readFile(path.join(queueDir, 'new-list.json'), 'utf8')), {
+      mirrors: [],
       entries: [],
     });
 

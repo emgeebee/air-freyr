@@ -61,6 +61,7 @@ import {
   importCsvText,
   parseCsvQueueLine,
   parseQueueDocument,
+  resolveQueueMirrorRoots,
   stripQueueExtension,
   toDownloadEntry,
 } from "./src/queue_format.js";
@@ -1371,8 +1372,26 @@ async function init(packageJson, queries, options) {
     CHECK_DIRECTORIES.unshift(BASE_DIRECTORY);
 
   const configuredMirrorRoots = collectMirrorRoots(Config, BASE_DIRECTORY);
+  let mirrorRootsToUse = configuredMirrorRoots;
+  if (options.input && /\.json$/i.test(options.input)) {
+    try {
+      const queueInputPath = await PROCESS_INPUT_FILE(options.input, "Input", false);
+      const queueDocument = parseQueueDocument(
+        await fs.readFile(queueInputPath, "utf8"),
+      );
+      mirrorRootsToUse = resolveQueueMirrorRoots(
+        queueDocument,
+        configuredMirrorRoots,
+      );
+    } catch (err) {
+      stackLogger.warn(
+        `\x1b[33m[!]\x1b[0m Failed to read queue mirror settings from [${options.input}]: ${err.message}`,
+      );
+      mirrorRootsToUse = [];
+    }
+  }
   const MIRROR_ROOTS = await filterWritableMirrorRoots(
-    configuredMirrorRoots,
+    mirrorRootsToUse,
     (msg) => stackLogger.warn(`\x1b[33m[!]\x1b[0m ${msg}`),
   );
   if (configuredMirrorRoots.length)

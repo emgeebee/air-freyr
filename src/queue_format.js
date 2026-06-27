@@ -141,22 +141,56 @@ export function normalizeStoredEntry(
   return entry;
 }
 
+export function normalizeQueueMirrors(mirrors) {
+  if (mirrors == null) return [];
+  if (!Array.isArray(mirrors)) throw new Error('mirrors must be an array');
+  return mirrors.map(mirror => String(mirror).trim()).filter(Boolean);
+}
+
+export function resolveQueueMirrorRoots(document, availableRoots) {
+  const selected = normalizeQueueMirrors(document?.mirrors);
+  if (!selected.length) return [];
+  const available = new Map(
+    (availableRoots || []).map(root => [path.resolve(String(root)), String(root)]),
+  );
+  return selected
+    .map(mirror => path.resolve(mirror))
+    .filter(resolved => available.has(resolved))
+    .map(resolved => available.get(resolved));
+}
+
+export function queueMirrorOptions(document, availableRoots) {
+  const selected = new Set(
+    normalizeQueueMirrors(document?.mirrors).map(mirror => path.resolve(mirror)),
+  );
+  return (availableRoots || []).map(root => {
+    const resolved = path.resolve(String(root));
+    return {path: String(root), selected: selected.has(resolved)};
+  });
+}
+
 export function emptyQueueDocument() {
-  return {entries: []};
+  return {mirrors: [], entries: []};
 }
 
 export function serializeQueueDocument(document) {
-  return `${JSON.stringify(document, null, 2)}\n`;
+  const payload = {entries: document.entries};
+  const mirrors = normalizeQueueMirrors(document.mirrors);
+  if (mirrors.length) payload.mirrors = mirrors;
+  return `${JSON.stringify(payload, null, 2)}\n`;
 }
 
 export function parseQueueDocument(text) {
   const trimmed = text.trim();
   if (!trimmed) return emptyQueueDocument();
   const parsed = JSON.parse(trimmed);
-  if (Array.isArray(parsed)) return {entries: parsed};
+  if (Array.isArray(parsed)) return {mirrors: [], entries: parsed};
   if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.entries))
     throw new Error('queue file must be a JSON object with an "entries" array');
-  return {entries: parsed.entries};
+  return {
+    mirrors: normalizeQueueMirrors(parsed.mirrors),
+    entries: parsed.entries,
+  };
 }
 
 export function entryLabel(entry) {
