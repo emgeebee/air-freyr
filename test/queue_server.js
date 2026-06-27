@@ -201,22 +201,6 @@ async function main() {
         configured: true,
         exists: true,
       },
-      {
-        type: 'mirror',
-        label: 'Mirror 1',
-        root: mirrorOne,
-        path: mirrorPath,
-        configured: true,
-        exists: true,
-      },
-      {
-        type: 'mirror',
-        label: 'Mirror 2',
-        root: mirrorTwo,
-        path: path.join(mirrorTwo, 'Kids', 'Compilations', 'YouTube', 'Artist - Title.mp3'),
-        configured: true,
-        exists: false,
-      },
     ]);
     assert.equal(list.json.entries[1].disabled, true);
     assert.deepEqual(list.json.mirrors, []);
@@ -233,6 +217,24 @@ async function main() {
     assert.equal(mirrors.json.ok, true);
     assert.deepEqual(mirrors.json.mirrors, [mirrorTwo]);
     assert.deepEqual(parseQueueDocument(await readFile(queueFile, 'utf8')).mirrors, [mirrorTwo]);
+    assert.deepEqual(mirrors.json.entries[0].files, [
+      {
+        type: 'download',
+        label: 'Download',
+        root: outputDir,
+        path: downloadPath,
+        configured: true,
+        exists: true,
+      },
+      {
+        type: 'mirror',
+        label: 'Mirror 1',
+        root: mirrorTwo,
+        path: path.join(mirrorTwo, 'Kids', 'Compilations', 'YouTube', 'Artist - Title.mp3'),
+        configured: true,
+        exists: false,
+      },
+    ]);
 
     const invalidMirror = await request(port, 'POST', '/api/list/mirrors', {
       file: 'kids.json',
@@ -245,8 +247,8 @@ async function main() {
     assert.equal(status.status, 200);
     assert.equal(status.json.files[0].label, 'Artist - Title');
     assert.equal(status.json.files[0].files[0].exists, true);
-    assert.equal(status.json.files[0].files[1].exists, true);
-    assert.equal(status.json.files[0].files[2].exists, false);
+    assert.equal(status.json.files[0].files.length, 2);
+    assert.equal(status.json.files[0].files[1].root, mirrorTwo);
 
     const traversal = await request(port, 'GET', '/api/list?file=../kids.json');
     assert.equal(traversal.status, 400);

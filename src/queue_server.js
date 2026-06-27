@@ -1694,7 +1694,7 @@ export default class QueueServer {
     return audioFormatFromArgs(this.#opts.extraCliArgs);
   }
 
-  async #resolveEntryFileLocations(entry) {
+  async #resolveEntryFileLocations(entry, queueMirrors = []) {
     const resolvedPaths = resolveBatchEntryPaths(entry, this.#audioFormat);
     const outputRoot = this.#opts.outputDir ? path.resolve(this.#opts.outputDir) : null;
     const downloadPath = outputRoot && resolvedPaths
@@ -1710,7 +1710,11 @@ export default class QueueServer {
         exists: await fileExists(downloadPath),
       },
     ];
-    for (const mirrorRoot of this.#mirrorRoots) {
+    const activeMirrorRoots = resolveQueueMirrorRoots(
+      {mirrors: queueMirrors},
+      this.#mirrorRoots,
+    );
+    for (const mirrorRoot of activeMirrorRoots) {
       const root = path.resolve(mirrorRoot);
       const mirrorPath = resolvedPaths
         ? path.join(root, resolvedPaths.mirror.trackPath, resolvedPaths.mirror.outFileName)
@@ -1728,14 +1732,16 @@ export default class QueueServer {
   }
 
   async #readQueueFile(file) {
-    return addEntryFileStatuses(
-      await readQueueFile(this.#opts.queueDir, file, this.#mirrorRoots),
-      entry => this.#resolveEntryFileLocations(entry),
+    const list = await readQueueFile(this.#opts.queueDir, file, this.#mirrorRoots);
+    return addEntryFileStatuses(list, entry =>
+      this.#resolveEntryFileLocations(entry, list.mirrors),
     );
   }
 
   async #withEntryFileStatuses(list) {
-    return addEntryFileStatuses(list, entry => this.#resolveEntryFileLocations(entry));
+    return addEntryFileStatuses(list, entry =>
+      this.#resolveEntryFileLocations(entry, list.mirrors),
+    );
   }
 
   async #loadProjectConfig() {
@@ -1776,7 +1782,7 @@ export default class QueueServer {
       for (const mirrorRoot of mirrorRoots) dlArgs.push('--mirror-dir', mirrorRoot);
 
       const spawnEnv = {...process.env};
-      if (mirrorRoots.length) spawnEnv.AIRFREYR_MIRROR_DIRS = mirrorRoots.join(',');
+      spawnEnv.AIRFREYR_MIRROR_DIRS = mirrorRoots.join(',');
 
       const useNpx = process.env.AIRFREYR_SPAWN_NPX === '1';
       const cmd = useNpx ? 'npx' : process.execPath;

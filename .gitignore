@@ -11,3 +11,4 @@ stage/
 
 # local credentials (use conf.json template + first-run auth instead)
 conf
+docker/conf.json

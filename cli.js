@@ -966,6 +966,8 @@ function CHECK_FILTER_FIELDS(arrayOfFields, props = {}) {
 async function init(packageJson, queries, options) {
   const initTimeStamp = Date.now();
   const stackLogger = new StackLogger({ indentSize: 1, autoTick: false });
+  const queueInputFile =
+    typeof options.input === "string" ? options.input : null;
   if (!((Array.isArray(queries) && queries.length > 0) || options.input))
     stackLogger.error("\x1b[31m[i]\x1b[0m Please enter a valid query"),
       process.exit(1);
@@ -1372,10 +1374,10 @@ async function init(packageJson, queries, options) {
     CHECK_DIRECTORIES.unshift(BASE_DIRECTORY);
 
   const configuredMirrorRoots = collectMirrorRoots(Config, BASE_DIRECTORY);
-  let mirrorRootsToUse = configuredMirrorRoots;
-  if (options.input && /\.json$/i.test(options.input)) {
+  let mirrorRootsToUse = [];
+  if (queueInputFile && /\.json$/i.test(queueInputFile)) {
     try {
-      const queueInputPath = await PROCESS_INPUT_FILE(options.input, "Input", false);
+      const queueInputPath = await PROCESS_INPUT_FILE(queueInputFile, "Input", false);
       const queueDocument = parseQueueDocument(
         await fs.readFile(queueInputPath, "utf8"),
       );
@@ -1383,12 +1385,27 @@ async function init(packageJson, queries, options) {
         queueDocument,
         configuredMirrorRoots,
       );
+      if (options.mirrorDir?.length) {
+        const allowed = new Set(
+          options.mirrorDir.map((dir) => xpath.resolve(dir)),
+        );
+        mirrorRootsToUse = mirrorRootsToUse.filter((dir) =>
+          allowed.has(xpath.resolve(dir)),
+        );
+      }
     } catch (err) {
       stackLogger.warn(
-        `\x1b[33m[!]\x1b[0m Failed to read queue mirror settings from [${options.input}]: ${err.message}`,
+        `\x1b[33m[!]\x1b[0m Failed to read queue mirror settings from [${queueInputFile}]: ${err.message}`,
       );
       mirrorRootsToUse = [];
     }
+  } else if (options.mirrorDir?.length) {
+    mirrorRootsToUse = collectMirrorRoots(
+      { dirs: { mirror: options.mirrorDir } },
+      BASE_DIRECTORY,
+    );
+  } else {
+    mirrorRootsToUse = configuredMirrorRoots;
   }
   const MIRROR_ROOTS = await filterWritableMirrorRoots(
     mirrorRootsToUse,
