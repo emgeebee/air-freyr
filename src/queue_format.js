@@ -220,6 +220,21 @@ export function toDownloadEntry(entry, fileGenre) {
   };
 }
 
+export function queueEntryKey(entry) {
+  return JSON.stringify([
+    String(entry.artist || '').trim(),
+    String(entry.title || '').trim(),
+    String(entry.url || '').trim(),
+  ]);
+}
+
+export function isQueueEntryActive(document, entry) {
+  const key = queueEntryKey(entry);
+  return document.entries.some(
+    stored => !stored.disabled && queueEntryKey(stored) === key,
+  );
+}
+
 export function activeDownloadEntries(document, fileGenre) {
   return document.entries
     .filter(entry => !entry.disabled)

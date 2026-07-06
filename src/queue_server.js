@@ -389,9 +389,19 @@ async function appendBulkQueueLines(dataDir, file, text, availableMirrors = []) 
   const fileGenre = genreFromQueueFilename(file);
   const imported = importCsvText(text, file);
   const document = await readQueueDocument(filePath);
+  const startLine = document.entries.length + 1;
   document.entries.push(...imported);
   await writeQueueDocument(filePath, document);
-  return {file, added: imported.length, ...(await readQueueFile(dataDir, file, availableMirrors))};
+  const addedLines = imported
+    .map((entry, index) => ({entry, line: startLine + index}))
+    .filter(({entry}) => !entry.disabled)
+    .map(({line}) => line);
+  return {
+    file,
+    added: imported.length,
+    addedLines,
+    ...(await readQueueFile(dataDir, file, availableMirrors)),
+  };
 }
 
 async function migrateTxtQueueFiles(dataDir) {
@@ -424,8 +434,10 @@ async function migrateTxtQueueFiles(dataDir) {
 
 class FileDownloadScheduler {
   #state = new Map();
+  #jobs = new Map();
 
-  schedule(filePath, runner) {
+  schedule(filePath, runner, {lines, extraArgs = []} = {}) {
+    this.#mergeJob(filePath, lines, extraArgs);
     const state = this.#state.get(filePath) || {
       running: false,
       pending: false,
@@ -441,6 +453,33 @@ class FileDownloadScheduler {
       return;
     }
     this.#run(filePath, runner, state);
+  }
+
+  #mergeJob(filePath, lines, extraArgs = []) {
+    let job = this.#jobs.get(filePath);
+    if (!job) {
+      job = {full: false, lines: new Set(), extraArgs: []};
+      this.#jobs.set(filePath, job);
+    }
+    if (extraArgs.length) job.extraArgs = extraArgs;
+    if (lines?.length) {
+      if (!job.full) {
+        for (const line of lines) {
+          if (Number.isInteger(line) && line > 0) job.lines.add(line);
+        }
+      }
+    } else if (lines === undefined) {
+      job.full = true;
+      job.lines.clear();
+    }
+  }
+
+  #takeJob(filePath) {
+    const job = this.#jobs.get(filePath);
+    this.#jobs.delete(filePath);
+    if (!job) return null;
+    if (job.full) return {full: true, lines: [], extraArgs: job.extraArgs || []};
+    return {full: false, lines: [...job.lines].sort((a, b) => a - b), extraArgs: job.extraArgs || []};
   }
 
   getStatus(filePath) {
@@ -468,12 +507,25 @@ class FileDownloadScheduler {
   }
 
   #run(filePath, runner, state) {
+    const job = this.#takeJob(filePath);
+    if (!job) return;
+
+    const runs = job.full
+      ? [job.extraArgs]
+      : job.lines.map(line => ['--line', String(line), ...job.extraArgs]);
+    if (!runs.length) return;
+
     state.running = true;
     state.lastStartedAt = new Date().toISOString();
     state.lastError = null;
     state.lastLog = null;
     state.lastExitCode = null;
-    runner(filePath)
+
+    (async () => {
+      for (const extraArgs of runs) {
+        await runner(filePath, extraArgs);
+      }
+    })()
       .catch(err => {
         state.lastError = err.message;
         console.error(`[airfreyr serve] download failed for ${filePath}: ${err.message}`);
@@ -1957,7 +2009,13 @@ export default class QueueServer {
           lines,
           this.#mirrorRoots,
         );
-        this.#scheduler.schedule(filePath, fp => this.#spawnDownload(fp));
+        if (result.addedLines.length) {
+          this.#scheduler.schedule(
+            filePath,
+            (fp, extraArgs = []) => this.#spawnDownload(fp, extraArgs),
+            {lines: result.addedLines},
+          );
+        }
         res.status(201).json(
           apiJson({
             ok: true,
@@ -2017,8 +2075,10 @@ export default class QueueServer {
         const {file, line} = req.body || {};
         const retry = await retryQueueFileItem(this.#opts.queueDir, file, line, this.#mirrorRoots);
         const filePath = resolveQueueFile(this.#opts.queueDir, file);
-        this.#scheduler.schedule(filePath, fp =>
-          this.#spawnDownload(fp, ['--line', String(retry.line), '--remirror']),
+        this.#scheduler.schedule(
+          filePath,
+          (fp, extraArgs = []) => this.#spawnDownload(fp, extraArgs),
+          {lines: [retry.line], extraArgs: ['--remirror']},
         );
         res.json(
           apiJson({
@@ -2037,7 +2097,11 @@ export default class QueueServer {
         const {file, entry} = normalizeAddPayload(req.body);
         const filePath = resolveQueueFile(this.#opts.queueDir, file);
         const line = await this.#appendEntry(filePath, entry);
-        this.#scheduler.schedule(filePath, fp => this.#spawnDownload(fp));
+        this.#scheduler.schedule(
+          filePath,
+          (fp, extraArgs = []) => this.#spawnDownload(fp, extraArgs),
+          {lines: [line]},
+        );
         res.status(201).json(
           apiJson({
             ok: true,

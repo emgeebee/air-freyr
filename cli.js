@@ -62,6 +62,7 @@ import {
   parseCsvQueueLine,
   parseQueueDocument,
   resolveQueueMirrorRoots,
+  isQueueEntryActive,
   stripQueueExtension,
   toDownloadEntry,
 } from "./src/queue_format.js";
@@ -663,6 +664,18 @@ function isPermanentFeedError(err) {
   );
 }
 
+const UNWANTED_VARIANT_MARKERS =
+  /\b(international|remix|remastered|live|acoustic|karaoke|cover|sped up|slowed|8d|extended|edit)\b/i;
+
+function isUnwantedVariant(candidateTitle, wantedTitle) {
+  const candidate = String(candidateTitle || "");
+  const wanted = String(wantedTitle || "");
+  return (
+    UNWANTED_VARIANT_MARKERS.test(candidate) &&
+    !UNWANTED_VARIANT_MARKERS.test(wanted)
+  );
+}
+
 function cleanTrackTitle(name, artist) {
   let cleaned = (name || "")
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, "")
@@ -968,6 +981,7 @@ async function init(packageJson, queries, options) {
   const stackLogger = new StackLogger({ indentSize: 1, autoTick: false });
   const queueInputFile =
     typeof options.input === "string" ? options.input : null;
+  let resolvedQueueInputFile = null;
   if (!((Array.isArray(queries) && queries.length > 0) || options.input))
     stackLogger.error("\x1b[31m[i]\x1b[0m Please enter a valid query"),
       process.exit(1);
@@ -1002,6 +1016,12 @@ async function init(packageJson, queries, options) {
           ? await PROCESS_INPUT_LINE(options.input, options.line)
           : await PROCESS_INPUT_ARG(options.input);
     }
+    if (queueInputFile)
+      resolvedQueueInputFile = await PROCESS_INPUT_FILE(
+        queueInputFile,
+        "Input",
+        false,
+      );
     if (options.config)
       options.config = await PROCESS_INPUT_FILE(
         options.config,
@@ -2171,7 +2191,21 @@ async function init(packageJson, queries, options) {
           let tried = 0;
           const maxCandidates = 15;
           const sourceLog = (msg) => (track._sourceLog || logFn)(msg);
-          for (const source of candidates.slice(0, maxCandidates)) {
+          const wantedTitle = track._searchName || track.name || searchTrack;
+          const variantFiltered = candidates.filter(
+            (source) => !isUnwantedVariant(source.title, wantedTitle),
+          );
+          if (
+            variantFiltered.length &&
+            variantFiltered.length < candidates.length
+          )
+            sourceLog(
+              `| [i] Skipping ${candidates.length - variantFiltered.length} alternate version(s)...`,
+            );
+          const candidatesToTry = variantFiltered.length
+            ? variantFiltered
+            : candidates;
+          for (const source of candidatesToTry.slice(0, maxCandidates)) {
             if (!("getFeeds" in source)) continue;
             if (source.videoId && skipVideoIds.has(source.videoId)) continue;
             tried += 1;
@@ -2194,7 +2228,7 @@ async function init(packageJson, queries, options) {
                 skipVideoIds.add(source.videoId);
                 track._skipVideoIds = [...skipVideoIds];
                 const remaining = Math.min(
-                  candidates.length,
+                  candidatesToTry.length,
                   maxCandidates,
                 ) - tried;
                 if (remaining > 0)
@@ -2469,7 +2503,11 @@ async function init(packageJson, queries, options) {
             Promise.reject({ err, [symbols.errorCode]: 6 }),
           );
         }
-        if (service[symbols.meta].ID === "youtube" && track.directSource) {
+        if (
+          service[symbols.meta].ID === "youtube" &&
+          track.directSource &&
+          !(useBatchLayout && batchMeta?.artist && batchMeta?.title)
+        ) {
           directSource = {
             service,
             source: track.directSource,
@@ -2761,6 +2799,29 @@ async function init(packageJson, queries, options) {
           : null;
       const query = normalizeQuery(queryEntry).url;
       const queryLogger = stackLogger.log(`[${queryLabel}]`).tick();
+      if (resolvedQueueInputFile && batchMeta) {
+        try {
+          const document = parseQueueDocument(
+            await fs.readFile(resolvedQueueInputFile, "utf8"),
+          );
+          if (
+            !isQueueEntryActive(document, {
+              artist: batchMeta.artist,
+              title: batchMeta.title,
+              url: query,
+            })
+          ) {
+            queryLogger.log(
+              `\x1b[33m[\u00bb] Skipped \u2014 removed or disabled from queue\x1b[0m`,
+            );
+            return;
+          }
+        } catch (err) {
+          queryLogger.warn(
+            `\x1b[33m[!] Could not re-check queue entry: ${err.message}\x1b[0m`,
+          );
+        }
+      }
       const service = await processPromise(
         freyrCore.identifyService(query),
         queryLogger,
