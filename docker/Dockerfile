@@ -1,7 +1,9 @@
 FROM node:20-alpine
 
-# python3: yt-dlp (via youtube-dl-exec) · bash: entrypoint
-RUN apk add --no-cache python3 bash
+# python3: yt-dlp (via youtube-dl-exec) · bash: entrypoint · deno: YouTube JS challenges
+RUN apk add --no-cache python3 bash curl unzip \
+  && curl -fsSL https://deno.land/install.sh | sh \
+  && mv /root/.deno/bin/deno /usr/local/bin/deno
 
 COPY docker/serve-entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh

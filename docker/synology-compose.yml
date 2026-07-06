@@ -41,7 +41,11 @@ services:
       - /bin/sh
       - -c
       - |
-        apk add --no-cache python3 bash
+        apk add --no-cache python3 bash curl unzip
+        if ! command -v deno >/dev/null 2>&1; then
+          curl -fsSL https://deno.land/install.sh | sh
+          export PATH="/root/.deno/bin:$$PATH"
+        fi
         REFRESH=$(($${AIRFREYR_REFRESH_HOURS:-3} * 3600))
         while true; do
           echo "[airfreyr] starting $$(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -54,6 +54,7 @@ import {
   extractStreamFormats,
   pickBestAudioFormat,
   feedsHaveAudioStream,
+  downloadAudioViaYtdlp,
 } from "./src/services/youtube.js";
 import {
   activeDownloadEntries,
@@ -658,10 +659,18 @@ function isPermanentFeedError(err) {
   const detail = formatErrDetail(err);
   return (
     detail.includes(NO_STREAM_FORMATS_MSG) ||
+    /403|forbidden|status code 403|collecting and parsing information/i.test(
+      detail,
+    ) ||
     /not available|private video|has been removed|account.*terminated|video unavailable/i.test(
       detail,
     )
   );
+}
+
+function isStreamDownloadError(err) {
+  const detail = formatErrDetail(err);
+  return /403|forbidden|status code 403|401|410|gone/i.test(detail);
 }
 
 const UNWANTED_VARIANT_MARKERS =
@@ -1761,7 +1770,7 @@ async function init(packageJson, queries, options) {
   const downloadQueue = new AsyncQueue(
     "cli:downloadQueue",
     Config.concurrency.downloader,
-    async ({ track, meta, feedMeta, trackLogger }) => {
+    async ({ track, meta, feedMeta, trackLogger, audioSource }) => {
       const baseCacheDir = Config.dirs.cache.path || "fr3yrcach3";
       let imageFile;
       let imageBytesWritten = 0;
@@ -1877,6 +1886,22 @@ async function init(packageJson, queries, options) {
               ),
             );
           } catch (err) {
+            const videoId = audioSource?.source?.videoId;
+            if (videoId && isStreamDownloadError(err)) {
+              trackLogger.log(
+                "| [i] Stream download blocked, retrying via yt-dlp...",
+              );
+              try {
+                audioBytesWritten = await downloadAudioViaYtdlp(
+                  videoId,
+                  rawAudio.path,
+                );
+                return;
+              } catch (fallbackErr) {
+                await rawAudio.remove();
+                throw fallbackErr;
+              }
+            }
             await rawAudio.remove();
             throw err;
           }
@@ -2224,16 +2249,14 @@ async function init(packageJson, queries, options) {
               if (!feedsHaveAudioStream(feeds)) throw noStreamFormatsError();
               return { sources, source, feeds, service: result.service };
             } catch (err) {
-              if (source.videoId && isPermanentFeedError(err)) {
+              if (source.videoId) {
                 skipVideoIds.add(source.videoId);
                 track._skipVideoIds = [...skipVideoIds];
-                const remaining = Math.min(
-                  candidatesToTry.length,
-                  maxCandidates,
-                ) - tried;
+                const remaining =
+                  Math.min(candidatesToTry.length, maxCandidates) - tried;
                 if (remaining > 0)
                   sourceLog(
-                    `| [i] Source unusable (${source.videoId}${formatErrDetail(err) ? `: ${formatErrDetail(err)}` : ""}), trying next (${remaining} left)...`,
+                    `| [i] Source failed (${source.videoId}${formatErrDetail(err) ? `: ${formatErrDetail(err)}` : ""}), trying next (${remaining} left)...`,
                   );
               }
               lastFeedErr = err;
@@ -2399,7 +2422,7 @@ async function init(packageJson, queries, options) {
         .update(`${audioSource.source.videoId} ${feedMeta.format_id}`)
         .digest("hex");
       const files = await downloadQueue
-        .push({ track, meta, feedMeta, trackLogger })
+        .push({ track, meta, feedMeta, trackLogger, audioSource })
         .catch((errObject) =>
           Promise.reject({
             meta,

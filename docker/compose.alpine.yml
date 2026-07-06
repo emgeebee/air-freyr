@@ -23,4 +23,4 @@ services:
       - ./music:/data/music
       - ./config:/data/config
       - ./serve-entrypoint.sh:/entrypoint.sh:ro
-    entrypoint: ["/bin/sh", "-c", "apk add --no-cache python3 bash && exec /entrypoint.sh"]
+    entrypoint: ["/bin/sh", "-c", "apk add --no-cache python3 bash curl unzip && (command -v deno >/dev/null || (curl -fsSL https://deno.land/install.sh | sh && export PATH=\"/root/.deno/bin:$PATH\")) && exec /entrypoint.sh"]

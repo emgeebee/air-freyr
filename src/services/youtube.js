@@ -1,5 +1,8 @@
 /* eslint-disable max-classes-per-file, no-underscore-dangle */
 import util from 'util';
+import xpath from 'path';
+import {spawnSync} from 'child_process';
+import {promises as fs} from 'fs';
 
 import got from 'got';
 import Promise from 'bluebird';
@@ -119,44 +122,79 @@ export function feedsHaveAudioStream(info) {
   return !!pickBestAudioFormat(extractStreamFormats(info));
 }
 
+export function detectJsRuntime() {
+  const probe = spawnSync('sh', ['-c', 'command -v deno'], {encoding: 'utf8'});
+  if (probe.status === 0) return 'deno';
+  return null;
+}
+
+export function ytdlpSharedOptions() {
+  const opts = {
+    socketTimeout: 60,
+    cacheDir: false,
+    noWarnings: true,
+    geoBypass: true,
+  };
+  const runtime = detectJsRuntime();
+  if (runtime) opts.jsRuntimes = runtime;
+  return opts;
+}
+
+const YTDLP_FEED_ATTEMPTS = [
+  ['--extractor-args', 'youtube:player_client=default,-android_sdkless'],
+  ['--extractor-args', 'youtube:player_client=default,-android_sdkless,web_safari'],
+  ['--extractor-args', 'youtube:player_client=android_vr'],
+  ['--extractor-args', 'youtube:player_client=tv_embedded'],
+  ['--extractor-args', 'youtube:player_client=ios'],
+  ['--extractor-args', 'youtube:player_client=web'],
+  ['--extractor-args', 'youtube:player_client=mweb'],
+  ['--extractor-args', 'youtube:player_client=android'],
+  [],
+];
+
+function ytdlpFeedArgs(extraArgs = []) {
+  return ['--geo-bypass', ...extraArgs];
+}
+
+export async function downloadAudioViaYtdlp(videoId, outputPath) {
+  const url = `https://www.youtube.com/watch?v=${videoId}`;
+  const dir = xpath.dirname(outputPath);
+  const stem = `freyr-ytdlp-${videoId}`;
+  const outTemplate = xpath.join(dir, `${stem}.%(ext)s`);
+  await youtubedl(url, {
+    ...ytdlpSharedOptions(),
+    output: outTemplate,
+    format: 'bestaudio/best',
+    extractorArgs: 'youtube:player_client=default,-android_sdkless',
+  });
+  const match = (await fs.readdir(dir)).find(name => name.startsWith(`${stem}.`));
+  if (!match) throw new Error('yt-dlp produced no audio output');
+  const downloaded = xpath.join(dir, match);
+  if (downloaded !== outputPath) {
+    await fs.rename(downloaded, outputPath).catch(async err => {
+      if (err.code !== 'EXDEV') throw err;
+      await fs.copyFile(downloaded, outputPath);
+      await fs.unlink(downloaded);
+    });
+  }
+  return (await fs.stat(outputPath)).size;
+}
+
 function genAsyncGetFeedsFn(urlOrId) {
   const url = /^[\w-]{11}$/.test(urlOrId)
     ? `https://www.youtube.com/watch?v=${urlOrId}`
     : urlOrId;
   return async () => {
-    const runWith = (extraArgs = [], opts = {}) =>
+    const runWith = (extraArgs = []) =>
       youtubedl(null, {
-        '--': [url, ...extraArgs],
-        socketTimeout: 20,
-        cacheDir: false,
+        ...ytdlpSharedOptions(),
         dumpSingleJson: true,
-        noWarnings: true,
-        ...opts,
+        '--': [url, ...ytdlpFeedArgs(extraArgs)],
       });
-    const attempts = [
-      [[], {}],
-      [['--geo-bypass'], {geoBypass: true}],
-      [
-        ['--geo-bypass', '--extractor-args', 'youtube:player_client=android'],
-        {geoBypass: true},
-      ],
-      [
-        ['--geo-bypass', '--extractor-args', 'youtube:player_client=ios'],
-        {geoBypass: true},
-      ],
-      [
-        ['--geo-bypass', '--extractor-args', 'youtube:player_client=web'],
-        {geoBypass: true},
-      ],
-      [
-        ['--geo-bypass', '--extractor-args', 'youtube:player_client=mweb'],
-        {geoBypass: true},
-      ],
-    ];
     let lastErr = noStreamFormatsError();
-    for (const [extraArgs, opts] of attempts) {
+    for (const extraArgs of YTDLP_FEED_ATTEMPTS) {
       try {
-        const info = await runWith(extraArgs, opts);
+        const info = await runWith(extraArgs);
         if (feedsHaveAudioStream(info)) return info;
         lastErr = noStreamFormatsError();
       } catch (err) {
