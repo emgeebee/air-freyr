@@ -1,6 +1,6 @@
 {
   "name": "@emgeebee/airfreyr",
-  "version": "1.0.26",
+  "version": "1.0.27",
   "description": "Music downloader with an HTTP queue server for remote track requests",
   "exports": "./src/freyr.js",
   "type": "module",
