@@ -141,20 +141,16 @@ export function ytdlpSharedOptions() {
 }
 
 const YTDLP_FEED_ATTEMPTS = [
-  ['--extractor-args', 'youtube:player_client=default,-android_sdkless'],
-  ['--extractor-args', 'youtube:player_client=default,-android_sdkless,web_safari'],
-  ['--extractor-args', 'youtube:player_client=android_vr'],
-  ['--extractor-args', 'youtube:player_client=tv_embedded'],
-  ['--extractor-args', 'youtube:player_client=ios'],
-  ['--extractor-args', 'youtube:player_client=web'],
-  ['--extractor-args', 'youtube:player_client=mweb'],
-  ['--extractor-args', 'youtube:player_client=android'],
-  [],
+  'default,-android_sdkless',
+  'default,-android_sdkless,web_safari',
+  'android_vr',
+  'tv_embedded',
+  'ios',
+  'web',
+  'mweb',
+  'android',
+  undefined,
 ];
-
-function ytdlpFeedArgs(extraArgs = []) {
-  return ['--geo-bypass', ...extraArgs];
-}
 
 export async function downloadAudioViaYtdlp(videoId, outputPath) {
   const url = `https://www.youtube.com/watch?v=${videoId}`;
@@ -185,16 +181,18 @@ function genAsyncGetFeedsFn(urlOrId) {
     ? `https://www.youtube.com/watch?v=${urlOrId}`
     : urlOrId;
   return async () => {
-    const runWith = (extraArgs = []) =>
-      youtubedl(null, {
+    const runWith = (playerClient) =>
+      youtubedl(url, {
         ...ytdlpSharedOptions(),
         dumpSingleJson: true,
-        '--': [url, ...ytdlpFeedArgs(extraArgs)],
+        ...(playerClient
+          ? {extractorArgs: `youtube:player_client=${playerClient}`}
+          : {}),
       });
     let lastErr = noStreamFormatsError();
-    for (const extraArgs of YTDLP_FEED_ATTEMPTS) {
+    for (const playerClient of YTDLP_FEED_ATTEMPTS) {
       try {
-        const info = await runWith(extraArgs);
+        const info = await runWith(playerClient);
         if (feedsHaveAudioStream(info)) return info;
         lastErr = noStreamFormatsError();
       } catch (err) {
